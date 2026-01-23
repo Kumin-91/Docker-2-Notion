@@ -1,0 +1,9 @@
+targets:
+  default: "example"
+  databases:
+    - name: "example"
+      database_id: "DATABASE_ID_HERE"
+    - name: "Kanade"
+      database_id: "KANADE_DATABASE_ID_HERE"
+    - name: "Su"
+      database_id: "SU_DATABASE_ID_HERE"
