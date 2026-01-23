@@ -119,12 +119,12 @@ targets:
 
 ## 🗿 마일스톤
 
-[x] **Docker API 버전 업데이트 및 SDK 전환**
+* [X] **Docker API 버전 업데이트 및 SDK 전환**
 
-[x] **객체 지향 기반 클래스 분리 (Docker, Notion, Cache)**
+* [X] **객체 지향 기반 클래스 분리 (Docker, Notion, Cache)**
 
-[x] **라벨 기반 필터링 및 DB 라우팅 로직 구현**
+* [X] **라벨 기반 필터링 및 DB 라우팅 로직 구현**
 
-[x] **JSON 기반 5분 TTL 캐시 시스템 도입**
+* [X] **JSON 기반 5분 TTL 캐시 시스템 도입**
 
-[] **Jenkins 파이프라인 적용 및 자동 배포**
+* [ ] **Jenkins 파이프라인 적용 및 자동 배포**
