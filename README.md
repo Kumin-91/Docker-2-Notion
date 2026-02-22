@@ -67,6 +67,8 @@
 
 * 보안을 위해 `.env` 파일 대신 런타임 환경 변수를 사용합니다. 설정 파일과 로그는 호스트의 홈 디렉토리에서 관리합니다.
 
+* `config/` 디렉토리에 있는 `config.yaml.example` 파일을 복사하여 실제 설정 파일을 작성하면 더 쉽습니다.
+
   ```Bash
   # 1. 홈 디렉토리에 설정 폴더 생성
   mkdir -p ~/d2n/config ~/d2n/logs ~/d2n/data
@@ -94,7 +96,7 @@
   | `DOCKER_API_URL` | Docker API URL | `unix:///var/run/docker.sock` | `tcp://host.docker.internal:2375`  |
   | `LOG_LEVEL` | 로그 레벨 | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 
-* `config/` 디렉토리에 있는 `config.yaml.example` 파일을 복사하여 실제 설정 파일을 작성하면 더 쉽습니다.
+* 도커 이미지를 빌드하고, 필요한 볼륨과 환경 변수를 주입하여 컨테이너로 실행합니다.
 
   ```Bash
   # 1. 이미지 빌드 (v0.1.0-beta2)
