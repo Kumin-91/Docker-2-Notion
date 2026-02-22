@@ -138,4 +138,8 @@ targets:
 
 * [x] **destroy 이벤트 감지 및 removed 상태 처리 구현**
 
-* [ ] **Jenkins 파이프라인 적용 및 자동 배포**
+* [ ] **시스템 환경 변수 우선순위 적용 및 설정 보안 고도화**
+
+* [ ] **Jenkinsfile 기반의 선언적 CI/CD 파이프라인 구축**
+
+* [ ] **Webhook 연동을 통한 Git Push 기반 자동 배포 검증**
