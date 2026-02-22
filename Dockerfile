@@ -23,16 +23,15 @@ WORKDIR /app
 # 런타임 의존성 설치 (타임존, 인증서 등)
 RUN apt-get update && apt-get install -y ca-certificates tzdata && rm -rf /var/lib/apt/lists/*
 
-# 설정 파일 및 실행 파일 복사
-COPY config/config.yaml config/config.yaml
-COPY config/.env config/.env
 COPY --from=builder /app/dist/Docker-2-Notion .
 
+ENV DOCKER_API_URL=unix:///var/run/docker.sock
+ENV NOTION_API_KEY=
 ENV TZ=Asia/Seoul
 ENV LOG_LEVEL=INFO
 
-# 로그 및 설정 저장을 위한 볼륨 명시
-# 실행 시: -v ./logs:/app/logs -v ./config:/app/config
-VOLUME ["/app/logs", "/app/config"]
+# 로그, 설정, 캐시 데이터는 컨테이너 외부에서 관리하도록 볼륨으로 설정
+# 실행 시: -v ./logs:/app/logs -v ./config:/app/config -v ./data:/app/data
+VOLUME ["/app/logs", "/app/config", "/app/data"]
 
 CMD ["./Docker-2-Notion"]
