@@ -26,7 +26,16 @@
 
     * **Status:** `status`
 
-      * `exited` `restarting` `running`
+      ![notion_page_status](./images/notion_page_status.png)
+
+      | 노션 Status 값 | 관련 도커 이벤트/상태 | 의미 |
+      | --- | --- | --- |
+      | running | start | 컨테이너가 정상적으로 가동 중인 상태 |
+      | exited | stop, die | 컨테이너 프로세스가 종료되어 멈춘 상태 |
+      | removed | destroy | 컨테이너가 삭제되어 더 이상 존재하지 않는 상태 |
+      | restarting | restarting | 컨테이너가 재시작 루프에 빠졌거나 다시 켜지는 중 |
+      | created | create | 컨테이너가 생성되었으나 아직 실행 전인 상태 |
+      | paused | paused | 컨테이너가 일시 정지된 상태 |
 
     * **Seen:** `date`
 
@@ -126,5 +135,7 @@ targets:
 * [X] **라벨 기반 필터링 및 DB 라우팅 로직 구현**
 
 * [X] **JSON 기반 5분 TTL 캐시 시스템 도입**
+
+* [x] **destroy 이벤트 감지 및 removed 상태 처리 구현**
 
 * [ ] **Jenkins 파이프라인 적용 및 자동 배포**

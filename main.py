@@ -1,5 +1,7 @@
 import sys
 import signal
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from config.settings import settings
 from src.models import DockerContainerInfo
 from src.docker_client import DockerClient
@@ -10,11 +12,14 @@ from src.logger import main_logger
 FILTER = {
     'type': 'container',
     'event': [
-        'create', # 생성됨 (아직 실행 안 됨)
-        'start',  # 실행 시작
-        'stop',   # 정상 중지 요청
-        'die',    # 프로세스 종료 (실제 꺼짐)
-        'destroy' # 컨테이너 삭제
+        'create',      # 생성됨 -> 노션: created
+        'start',       # 실행 시작 -> 노션: running
+        'stop',        # 중지 요청 -> 노션: exited
+        'die',         # 프로세스 종료 -> 노션: exited
+        'destroy',     # 컨테이너 삭제 -> 노션: removed
+        'restarting',  # 재시작 중 -> 노션: restarting
+        'pause',       # 일시 정지 -> 노션: paused
+        'unpause'      # 정지 해제 -> 노션: running
     ]
 }
 
@@ -99,17 +104,45 @@ def main():
 
     try:
         for event in docker_client.monitor_changes(filters=FILTER):
-            main_logger.info(f"Detected event: {event.get('Action')} for container Name: {event.get('name') or event.get('Actor', {}).get('ID')}")
-            # 이벤트에서 컨테이너 ID 및 정보 가져오기
-            container_id = event.get("id") or event.get("Actor", {}).get("ID")
+            # 0. 이벤트에서 컨테이너 정보 가져오기
+            action = event.get("Action")
+            actor = event.get("Actor", {})
+            actor_attributes = actor.get("Attributes", {})
+            container_id = event.get("id") or actor.get("ID")
+            container_name = (event.get("name") or actor_attributes.get("name", "")).lstrip("/")
+
+            main_logger.info(f"Detected event: {action} for container Name: {container_name}")
+
+            # 1. destroy 전용 처리
+            if action == "destroy":
+                d2n_enabled = actor_attributes.get('d2n.enabled', 'FALSE').upper() == 'TRUE'
+                d2n_database = actor_attributes.get('d2n.database', settings.DEFAULT_DB_ID)
+
+                if not d2n_enabled: continue
+
+                removed_info = DockerContainerInfo(
+                    container_id=container_id,
+                    name=container_name,
+                    status="removed",
+                    seen=datetime.now(ZoneInfo(settings.TIMEZONE)).isoformat(),
+                    ip="",
+                    port="",
+                    d2n_enabled=d2n_enabled,
+                    d2n_database=d2n_database
+                )
+                
+                process_update(removed_info, notion_client, cache_manager)
+                cache_manager.remove_page_id(container_name)
+                continue
+
+           # 2. 그 외 이벤트 처리 (create, start, stop, die)
             if not container_id: continue
 
-            # 컨테이너 상세 정보 조회
             container_info = docker_client.get_container_info(container_id)
             if container_info is None: continue
 
-            # 업데이트 처리
             process_update(container_info, notion_client, cache_manager)
+
     except (KeyboardInterrupt, SystemExit):
         main_logger.info("Shutting down gracefully...")
     except Exception as e:
