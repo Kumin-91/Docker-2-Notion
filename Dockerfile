@@ -25,8 +25,6 @@ RUN apt-get update && apt-get install -y ca-certificates tzdata && rm -rf /var/l
 
 COPY --from=builder /app/dist/Docker-2-Notion .
 
-ENV DOCKER_API_URL=unix:///var/run/docker.sock
-ENV NOTION_API_KEY=
 ENV TZ=Asia/Seoul
 ENV LOG_LEVEL=INFO
 

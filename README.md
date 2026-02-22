@@ -93,14 +93,15 @@
   | 환경 변수 | 설명 | 기본 값 | 사용 예시 |
   | --- | --- | --- | --- |
   | `NOTION_API_KEY` | Notion API 토큰 |  | `your_notion_api_key_here` | 
-  | `DOCKER_API_URL` | Docker API URL | `unix:///var/run/docker.sock` | `tcp://host.docker.internal:2375`  |
+  | `DOCKER_API_URL` | Docker API URL |  | `tcp://host.docker.internal:2375` |
   | `LOG_LEVEL` | 로그 레벨 | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+  | `TZ` | 타임존 설정 | `Asia/Seoul` | `Asia/Japan`, `America/New_York` |
 
 * 도커 이미지를 빌드하고, 필요한 볼륨과 환경 변수를 주입하여 컨테이너로 실행합니다.
 
   ```Bash
-  # 1. 이미지 빌드 (v0.1.0-beta2)
-  docker build . -t d2n:beta2
+  # 1. 이미지 빌드 (v0.1.0-beta3)
+  docker build . -t d2n:beta3
 
   # 2. 실행 (환경 변수 주입 및 볼륨 마운트)
   docker run -d \
@@ -110,11 +111,13 @@
     -v ~/d2n/config:/app/config \
     -v ~/d2n/logs:/app/logs \
     -v ~/d2n/data:/app/data \
+    -e DOCKER_API_URL="unix:///var/run/docker.sock" \
     -e NOTION_API_KEY="your_notion_api_key_here" \
     -e LOG_LEVEL="INFO" \
+    -e TZ="Asia/Seoul" \
     --label "d2n.enabled=true" \
     --label "d2n.database=Docker" \
-    d2n:beta2
+    d2n:beta3
   ```
 
 ## 🏗 프로젝트 구조
@@ -155,7 +158,7 @@
 
 * [X] `Dockerfile`: **`.env` 제거, 환경 변수 기본값 설정, logs/config/data 볼륨 구성 완료**
 
-* [ ] `settings.py`: **시스템 환경 변수 우선순위 로직 적용**
+* [X] `settings.py`: **시스템 환경 변수 우선순위 로직 적용**
 
 * [ ] **Jenkinsfile 기반의 선언적 CI/CD 파이프라인 구축**
 

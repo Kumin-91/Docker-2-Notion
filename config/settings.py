@@ -28,19 +28,17 @@ class Settings:
         config_logger.info("Loading configuration...")
 
         # 설정 로드
-        self._load_env_file(env_file)
+        self._load_env(env_file)
         self._load_yaml_config(yaml_file)
 
-    def _load_env_file(self, env_file: str) -> None:
-        """.env 파일에서 환경 변수를 로드."""
-        if os.path.exists(env_file):
-            load_dotenv(env_file)
-        else:
-            config_logger.error(f".env file '{os.path.abspath(env_file)}' not found")
-            raise FileNotFoundError(f".env file '{os.path.abspath(env_file)}' not found")
-        
-        # 환경 변수 불러오기
-        self.DOCKER_API_URL = os.getenv("DOCKER_API_URL", "unix:///var/run/docker.sock")
+    def _load_env(self, env_file: str) -> None:
+        """시스템 환경 변수를 1순위로, 부족한 정보는 .env에서 보충."""
+
+        # load_dotenv는 시스템 환경 변수를 덮어쓰지 않으므로, 이미 설정된 변수는 유지됩니다.
+        # load_dotenv는 파일이 존재하지 않아도 예외를 발생시키지 않으므로 안전하게 호출할 수 있습니다.
+        load_dotenv(env_file)
+        # 시스템 환경 변수가 없다면, load_dotenv로 .env 파일에서 로드된 값을 사용합니다.
+        self.DOCKER_API_URL = os.getenv("DOCKER_API_URL", "")
         self.NOTION_API_KEY = os.getenv("NOTION_API_KEY", "")
 
         # 타임존 설정 (TZ 환경변수 확인, 없거나 유효하지 않으면 Asia/Seoul)
@@ -51,13 +49,19 @@ class Settings:
         except Exception:
             config_logger.warning(f"Invalid timezone: {tz_env}. Falling back to Asia/Seoul.")
             self.TIMEZONE = "Asia/Seoul"
-
         config_logger.info(f"Timezone set to: {self.TIMEZONE}")
 
-        # 필수 환경 변수 확인
-        if self.NOTION_API_KEY == "":
-            config_logger.error("No NOTION_API_KEY found in environment variables")
-            raise ValueError("No NOTION_API_KEY found in environment variables")
+        # 필수 환경 변수 유효성 검사
+        required_vars = {
+            "DOCKER_API_URL": self.DOCKER_API_URL,
+            "NOTION_API_KEY": self.NOTION_API_KEY
+        }
+        
+        for var_name, value in required_vars.items():
+            if not value:
+                error_msg = f"No {var_name} found in environment variables"
+                config_logger.error(error_msg)
+                raise ValueError(error_msg)
 
     def _load_yaml_config(self, yaml_file: str) -> None:
         """.yaml 파일에서 설정을 로드."""
