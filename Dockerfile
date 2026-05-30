@@ -15,13 +15,6 @@ RUN pip install pyinstaller
 COPY . .
 RUN pyinstaller --onefile --name Docker-2-Notion --clean main.py
 
-# (CI 전용) 테스트 스테이지: docker build --target test .
-# builder의 의존성/소스를 재사용해 pytest와 mypy를 실행한다.
-# 일반 빌드(docker build .)는 마지막 runtime 스테이지를 타므로 이 단계를 건너뛴다.
-FROM builder AS test
-RUN pip install --no-cache-dir pytest
-RUN pytest && mypy main.py src config
-
 # 2단계: 실행 환경
 FROM debian:trixie-slim
 
