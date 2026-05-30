@@ -36,18 +36,10 @@ pipeline
             {
                 script
                 {
-                    echo "Running tests - pytest & mypy (python:3.14)"
-                    // 컴파일러가 포함된 full 이미지 사용 (cryptography/cffi 휠 부재 시에도 안전)
-                    docker.image('python:3.14-trixie').inside
-                    {
-                        sh '''
-                            python -m venv .venv
-                            . .venv/bin/activate
-                            pip install --no-cache-dir -r requirements-dev.txt
-                            pytest
-                            mypy main.py src config
-                        '''
-                    }
+                    echo "Running tests - pytest & mypy (docker build --target test)"
+                    // 플러그인의 docker.image().inside 는 오래된 클라이언트(API 1.29)를 써서
+                    // 최신 데몬(>=1.40)에 거부당하므로, 정상 동작하는 docker build 로 테스트한다.
+                    sh 'docker build --target test -t ${PROJECT_NAME}:test .'
                 }
             }
         }
