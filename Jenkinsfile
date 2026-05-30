@@ -51,85 +51,70 @@ pipeline
                 }
             }
         }
-        stage('Build & Deploy')
+        stage('Docker build')
         {
-            // main 브랜치에서만 빌드/배포 (멀티브랜치=branch, 단일 SCM 잡=GIT_BRANCH 모두 대응)
-            when
+            steps
             {
-                anyOf
+                script
                 {
-                    branch 'main'
-                    expression { (env.GIT_BRANCH ?: '').endsWith('main') }
+                    echo "Building docker image"
+                    sh '''
+                        docker build -t ${PROJECT_NAME}:${PROJECT_STATUS}-${BUILD_NUMBER} .
+                        docker tag ${PROJECT_NAME}:${PROJECT_STATUS}-${BUILD_NUMBER} ${PROJECT_NAME}:latest
+                    '''
                 }
             }
-            stages
+        }
+        stage('Remove old docker container')
+        {
+            steps
             {
-                stage('Docker build')
+                script
                 {
-                    steps
-                    {
-                        script
-                        {
-                            echo "Building docker image"
-                            sh '''
-                                docker build -t ${PROJECT_NAME}:${PROJECT_STATUS}-${BUILD_NUMBER} .
-                                docker tag ${PROJECT_NAME}:${PROJECT_STATUS}-${BUILD_NUMBER} ${PROJECT_NAME}:latest
-                            '''
-                        }
-                    }
+                    echo "Removing old docker container"
+                    sh '''
+                        docker stop ${PROJECT_NAME} || true
+                        docker rm ${PROJECT_NAME} || true
+                    '''
                 }
-                stage('Remove old docker container')
+            }
+        }
+        stage('Run new docker container')
+        {
+            steps
+            {
+                script
                 {
-                    steps
-                    {
-                        script
-                        {
-                            echo "Removing old docker container"
-                            sh '''
-                                docker stop ${PROJECT_NAME} || true
-                                docker rm ${PROJECT_NAME} || true
-                            '''
-                        }
-                    }
+                    echo "Running new docker container"
+                    // D2N은 Docker 이벤트를 감시하므로 docker.sock 을 마운트합니다.
+                    sh '''
+                        docker run -d \
+                            --name ${PROJECT_NAME} \
+                            -v /var/run/docker.sock:/var/run/docker.sock \
+                            -v ${HOST_DIR}/config:/app/config \
+                            -v ${HOST_DIR}/logs:/app/logs \
+                            -v ${HOST_DIR}/data:/app/data \
+                            -e DOCKER_API_URL="unix:///var/run/docker.sock" \
+                            -e NOTION_API_KEY="${NOTION_API_KEY}" \
+                            -e LOG_LEVEL="${LOG_LEVEL}" \
+                            -e TZ="${TZ}" \
+                            --label "d2n.enabled=true" \
+                            --label "d2n.database=Jenkins" \
+                            --label "com.centurylinklabs.watchtower.enable=false" \
+                            --restart unless-stopped \
+                            ${PROJECT_NAME}:latest
+                    '''
                 }
-                stage('Run new docker container')
+            }
+        }
+        stage('Cleanup dangling images')
+        {
+            steps
+            {
+                script
                 {
-                    steps
-                    {
-                        script
-                        {
-                            echo "Running new docker container"
-                            // D2N은 Docker 이벤트를 감시하므로 docker.sock 을 마운트합니다.
-                            sh '''
-                                docker run -d \
-                                    --name ${PROJECT_NAME} \
-                                    -v /var/run/docker.sock:/var/run/docker.sock \
-                                    -v ${HOST_DIR}/config:/app/config \
-                                    -v ${HOST_DIR}/logs:/app/logs \
-                                    -v ${HOST_DIR}/data:/app/data \
-                                    -e DOCKER_API_URL="unix:///var/run/docker.sock" \
-                                    -e NOTION_API_KEY="${NOTION_API_KEY}" \
-                                    -e LOG_LEVEL="${LOG_LEVEL}" \
-                                    -e TZ="${TZ}" \
-                                    --label "d2n.enabled=true" \
-                                    --label "d2n.database=Jenkins" \
-                                    --label "com.centurylinklabs.watchtower.enable=false" \
-                                    --restart unless-stopped \
-                                    ${PROJECT_NAME}:latest
-                            '''
-                        }
-                    }
-                }
-                stage('Cleanup dangling images')
-                {
-                    steps
-                    {
-                        script
-                        {
-                            echo "Pruning dangling images"
-                            sh 'docker image prune -f || true'
-                        }
-                    }
+                    echo "Pruning dangling images"
+                    sh 'docker image prune -f || true'
                 }
             }
         }
