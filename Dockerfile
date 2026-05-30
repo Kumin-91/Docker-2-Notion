@@ -1,5 +1,5 @@
 # 1단계: 빌드 환경
-FROM python:3.13-slim-trixie AS builder
+FROM python:3.14-slim-trixie AS builder
 
 WORKDIR /app
 
