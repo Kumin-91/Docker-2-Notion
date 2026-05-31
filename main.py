@@ -222,7 +222,6 @@ def main() -> None:
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    # 설정 로드 및 의존성 조립
     settings = load_settings()
     docker_client = DockerClient(settings)
     notion_client = NotionClient(settings.NOTION_API_KEY)

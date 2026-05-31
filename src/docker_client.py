@@ -156,7 +156,6 @@ class DockerClient:
 
         docker_logger.info(f"Connecting to Docker daemon at {self.docker_api_url}...")
 
-        # 연결 테스트
         if not self.client.ping():
             docker_logger.error(f"Unable to connect to Docker daemon at {self.docker_api_url}")
             raise ConnectionError(f"Unable to connect to Docker daemon at {self.docker_api_url}")
@@ -215,7 +214,6 @@ class DockerClient:
             container = self.client.containers.get(container_id)
             attrs = container.attrs or {}
 
-            # 태그(라벨) 추출
             labels = (attrs.get("Config", {}) or {}).get("Labels", {}) or {}
             d2n_enabled = labels.get("d2n.enabled", "FALSE").upper() == "TRUE"
             d2n_database = labels.get("d2n.database", "")

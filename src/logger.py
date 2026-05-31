@@ -3,15 +3,11 @@ import os
 import sys
 from logging.handlers import TimedRotatingFileHandler
 
-# 로그 레벨 설정
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-
-# 유효하지 않은 레벨이면 INFO로 설정
 if LOG_LEVEL not in ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]:
     print(f"Warning: Invalid LOG_LEVEL '{LOG_LEVEL}'. Defaulting to INFO.", file=sys.stderr)
     LOG_LEVEL = "INFO"
 
-# 로그 디렉토리 생성
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 if not os.path.exists(LOG_DIR):
@@ -99,7 +95,6 @@ def setup_logger(name: str) -> logging.Logger:
     return logger
 
 
-# 로거 인스턴스 생성
 main_logger = setup_logger("Main")
 config_logger = setup_logger("Config")
 docker_logger = setup_logger("Docker")

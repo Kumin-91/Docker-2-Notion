@@ -1,12 +1,11 @@
-from enum import StrEnum
-
-"""
-Docker 컨테이너 상태를 Notion Status 속성 옵션 값으로 정규화합니다.
+"""Docker 컨테이너 상태를 Notion Status 속성 옵션 값으로 정규화합니다.
 
 Notion DB의 Status 옵션은 README 기준 아래 6종을 사용합니다.
 매핑되지 않은 Docker 상태(예: dead, removing)가 Notion에 그대로 전달되면
 옵션이 없어 업데이트가 실패하므로 여기서 한 곳에 모아 변환합니다.
 """
+
+from enum import StrEnum
 
 
 class NotionStatus(StrEnum):
