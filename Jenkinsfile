@@ -29,9 +29,9 @@ pipeline {
         stage('Test') {
             steps {
                 sh '''
-                    docker rm -f test-env || true
+                    docker rm -f test-env-d2n || true
                     
-                    docker create --name test-env -w /workspace python:3.14-trixie /bin/sh -c "
+                    docker create --name test-env-d2n -w /workspace python:3.14-trixie /bin/sh -c "
                         python -m venv .venv && \\
                         . .venv/bin/activate && \\
                         pip install --no-cache-dir -r requirements-dev.txt && \\
@@ -39,13 +39,13 @@ pipeline {
                         mypy main.py src config
                     "
                     
-                    docker cp . test-env:/workspace/
-                    docker start -a test-env
+                    docker cp . test-env-d2n:/workspace/
+                    docker start -a test-env-d2n
                 '''
             }
             post {
                 always {
-                    sh 'docker rm -f test-env || true'
+                    sh 'docker rm -f test-env-d2n || true'
                 }
             }
         }
