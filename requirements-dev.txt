@@ -2,3 +2,9 @@
 -r requirements.txt
 
 pytest>=8,<9
+mypy==1.19.1
+mypy_extensions==1.1.0
+types-docker==7.1.0.20260109
+types-paramiko==4.0.0.20250822
+types-PyYAML==6.0.12.20250915
+types-requests==2.32.4.20260107
