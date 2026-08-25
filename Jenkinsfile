@@ -16,7 +16,7 @@ pipeline {
         NOTION_API_KEY = credentials("D2N_NOTION_API_KEY")
 
         PROJECT_NAME = "d2n"
-        PROJECT_STATUS = "beta"
+        PROJECT_STATUS = "stable"
         LOG_LEVEL = "INFO"
         TZ = "Asia/Seoul"
 
@@ -45,7 +45,6 @@ pipeline {
             }
             post {
                 always {
-                    // 테스트 성공/실패 여부와 상관없이 테스트 컨테이너 즉시 정리
                     sh 'docker rm -f test-env || true'
                 }
             }
