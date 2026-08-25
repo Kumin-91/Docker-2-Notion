@@ -1,84 +1,69 @@
-pipeline
-{
-    agent
-    {
+pipeline {
+    agent {
         label 'jenkins_agent'
     }
-    tools
-    {
+    
+    tools {
         dockerTool 'docker_default'
     }
-    options
-    {
+    
+    options {
         timestamps()
     }
-    environment
-    {
-        // Discord 알림 (기존 공용 크리덴셜 재사용)
+    
+    environment {
         WEBHOOK_URL = credentials("DISCORD_METATRON")
-        // Notion API 키: 이미지에 남기지 않고 실행 시점에만 주입 (Jenkins Secret text 크리덴셜)
         NOTION_API_KEY = credentials("D2N_NOTION_API_KEY")
 
         PROJECT_NAME = "d2n"
         PROJECT_STATUS = "beta"
-
-        // 호스트에 미리 준비: ${HOST_DIR}/config/config.yaml (logs/data 는 자동 생성)
-        HOST_DIR = "/docker/d2n"
-
         LOG_LEVEL = "INFO"
         TZ = "Asia/Seoul"
 
-        // 컨테이너 실행 옵션: 기록할 Notion DB 이름, 외부(Notion API) 통신용 네트워크
+        HOST_DIR = "/docker/d2n"
         D2N_DATABASE = "Jenkins"
         NETWORK = "net_outbound"
     }
-    stages
-    {
-        stage('Test')
-        {
-            steps
-            {
-                script
-                {
-                    // 컴파일러가 포함된 full 이미지 사용 (cryptography/cffi 휠 부재 시에도 안전)
-                    docker.image('python:3.14-trixie').inside
-                    {
-                        sh '''
-                            python -m venv .venv
-                            . .venv/bin/activate
-                            pip install --no-cache-dir -r requirements-dev.txt
-                            pytest
+    
+    stages {
+        stage('Test') {
+            steps {
+                sh '''
+                    docker run --rm \
+                        -v "${WORKSPACE}:/workspace" \
+                        -w /workspace \
+                        python:3.14-trixie \
+                        /bin/sh -c "
+                            python -m venv .venv && \
+                            . .venv/bin/activate && \
+                            pip install --no-cache-dir -r requirements-dev.txt && \
+                            pytest && \
                             mypy main.py src config
-                        '''
-                    }
-                }
+                        "
+                '''
             }
         }
-        stage('Docker build')
-        {
-            steps
-            {
+        
+        stage('Docker build') {
+            steps {
                 sh '''
                     docker build -t ${PROJECT_NAME}:${PROJECT_STATUS}-${BUILD_NUMBER} .
                     docker tag ${PROJECT_NAME}:${PROJECT_STATUS}-${BUILD_NUMBER} ${PROJECT_NAME}:latest
                 '''
             }
         }
-        stage('Remove old docker container')
-        {
-            steps
-            {
+        
+        stage('Remove old docker container') {
+            steps {
                 sh '''
                     docker stop ${PROJECT_NAME} || true
                     docker rm ${PROJECT_NAME} || true
                 '''
             }
         }
-        stage('Run new docker container')
-        {
-            steps
-            {
-                // D2N은 Docker 이벤트를 감시하므로 docker.sock 을 마운트합니다.
+        
+        stage('Run new docker container') {
+            steps {
                 sh '''
                     docker run -d \
                         --name ${PROJECT_NAME} \
@@ -99,31 +84,30 @@ pipeline
                 '''
             }
         }
-        stage('Cleanup dangling images')
-        {
-            steps
-            {
+        
+        stage('Cleanup dangling images') {
+            steps {
                 sh 'docker image prune -f || true'
             }
         }
     }
-    post
-    {
-        success
-        {
+    
+    post {
+        success {
             discordSend description: "Build Success",
-                            footer: "Application Deployed Successfully",
-                            link: env.BUILD_URL, result: currentBuild.currentResult,
-                            title: "${env.JOB_NAME} #${BUILD_NUMBER}",
-                            webhookURL: env.WEBHOOK_URL
+                        footer: "Application Deployed Successfully",
+                        link: env.BUILD_URL, 
+                        result: currentBuild.currentResult,
+                        title: "${env.JOB_NAME} #${BUILD_NUMBER}",
+                        webhookURL: env.WEBHOOK_URL
         }
-        failure
-        {
+        failure {
             discordSend description: "Build Fail",
-                            footer: "Application Deployed Failed",
-                            link: env.BUILD_URL, result: currentBuild.currentResult,
-                            title: "${env.JOB_NAME} #${BUILD_NUMBER}",
-                            webhookURL: env.WEBHOOK_URL
+                        footer: "Application Deployed Failed",
+                        link: env.BUILD_URL, 
+                        result: currentBuild.currentResult,
+                        title: "${env.JOB_NAME} #${BUILD_NUMBER}",
+                        webhookURL: env.WEBHOOK_URL
         }
     }
 }
