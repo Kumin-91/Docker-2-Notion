@@ -29,18 +29,25 @@ pipeline {
         stage('Test') {
             steps {
                 sh '''
-                    docker run --rm \
-                        -v "${WORKSPACE}:/workspace" \
-                        -w /workspace \
-                        python:3.14-trixie \
-                        /bin/sh -c "
-                            python -m venv .venv && \
-                            . .venv/bin/activate && \
-                            pip install --no-cache-dir -r requirements-dev.txt && \
-                            pytest && \
-                            mypy main.py src config
-                        "
+                    docker rm -f test-env || true
+                    
+                    docker create --name test-env -w /workspace python:3.14-trixie /bin/sh -c "
+                        python -m venv .venv && \\
+                        . .venv/bin/activate && \\
+                        pip install --no-cache-dir -r requirements-dev.txt && \\
+                        pytest && \\
+                        mypy main.py src config
+                    "
+                    
+                    docker cp . test-env:/workspace/
+                    docker start -a test-env
                 '''
+            }
+            post {
+                always {
+                    // 테스트 성공/실패 여부와 상관없이 테스트 컨테이너 즉시 정리
+                    sh 'docker rm -f test-env || true'
+                }
             }
         }
         
