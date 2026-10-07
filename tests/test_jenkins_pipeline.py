@@ -15,6 +15,7 @@ def test_test_stage_checks_container_exit_status(tmp_path, container_exit, expec
     fake_docker = tmp_path / "docker"
     fake_docker.write_text(
         '#!/bin/sh\n'
+        'printf "%s\\n" "$*" >> "$D2N_TEST_COMMANDS"\n'
         'if [ "$1" = "inspect" ]; then\n'
         f'  echo {container_exit}\n'
         'fi\n'
@@ -23,6 +24,12 @@ def test_test_stage_checks_container_exit_status(tmp_path, container_exit, expec
     fake_docker.chmod(0o755)
     result = subprocess.run(
         ["/bin/sh", "-e", "-c", script], capture_output=True, text=True,
-        env={**os.environ, "PATH": str(tmp_path)},
+        env={
+            **os.environ, "PATH": str(tmp_path), "NETWORK": "ci-outbound",
+            "D2N_TEST_COMMANDS": str(tmp_path / "commands.txt"),
+        },
     )
     assert (result.returncode == 0) is expected_success
+    commands = (tmp_path / "commands.txt").read_text().splitlines()
+    create = next(command for command in commands if command.startswith("create "))
+    assert "--network ci-outbound" in create
