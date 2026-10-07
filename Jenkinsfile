@@ -9,6 +9,7 @@ pipeline {
     
     options {
         timestamps()
+        disableConcurrentBuilds()
     }
     
     environment {
@@ -41,6 +42,8 @@ pipeline {
                     
                     docker cp . test-env-d2n:/workspace/
                     docker start -a test-env-d2n
+                    test_container_exit_code=$(docker inspect --format='{{.State.ExitCode}}' test-env-d2n)
+                    test "$test_container_exit_code" -eq 0
                 '''
             }
             post {

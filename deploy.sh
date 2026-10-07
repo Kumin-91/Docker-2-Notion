@@ -20,7 +20,7 @@ HOST_DIR="${HOST_DIR:-/docker/d2n}"       # config/logs/data 가 보존되는 �
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
 TZ="${TZ:-Asia/Seoul}"
 D2N_DATABASE="${D2N_DATABASE:-Jenkins}"   # 이 컨테이너를 기록할 Notion DB 이름
-NETWORK="${NETWORK:-net_outbound}"        # 외부(Notion API) 통신용 네트워크
+NETWORK="${NETWORK-net_outbound}"         # 미지정 시 기본값, 명시적 빈 값은 기본 브리지
 
 echo "==> 1/4 호스트 디렉터리 확인 (${HOST_DIR})"
 mkdir -p "${HOST_DIR}/config" "${HOST_DIR}/logs" "${HOST_DIR}/data"

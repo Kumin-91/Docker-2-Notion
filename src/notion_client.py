@@ -1,4 +1,9 @@
 import time
+import math
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from threading import Event
+import httpx
 from typing import Any, Callable, TypeVar, cast
 from notion_client import Client
 from notion_client.errors import (
@@ -26,13 +31,38 @@ class PageNotFoundError(Exception):
         self.page_id = page_id
 
 
+class AmbiguousCreateError(Exception):
+    """Creation may have succeeded; search again without issuing another create."""
+
+
+class DuplicatePagesError(Exception):
+    """Multiple matching pages need review; never select one arbitrarily."""
+
+
 def _is_retryable(exc: Exception) -> bool:
-    """일시적(재시도 가능) 오류인지 판별. 429 또는 5xx, 요청 타임아웃."""
-    if isinstance(exc, RequestTimeoutError):
+    if isinstance(exc, (RequestTimeoutError, httpx.TransportError)):
         return True
     if isinstance(exc, HTTPResponseError):
-        return exc.status == 429 or exc.status >= 500
+        return exc.status in (408, 429) or exc.status >= 500
     return False
+
+
+def retry_after_seconds(exc: Exception) -> float:
+    headers = getattr(exc, "headers", None)
+    value = headers.get("Retry-After") if headers is not None else None
+    if value is None:
+        return 0.0
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            date = parsedate_to_datetime(value)
+            if date.tzinfo is None:
+                date = date.replace(tzinfo=timezone.utc)
+            seconds = (date - datetime.now(timezone.utc)).total_seconds()
+        except (ValueError, TypeError, OverflowError):
+            return 0.0
+    return max(0.0, seconds) if math.isfinite(seconds) else 0.0
 
 
 def _rich_text(value: str) -> dict[str, Any]:
@@ -43,47 +73,37 @@ def _rich_text(value: str) -> dict[str, Any]:
 
 
 class NotionClient:
-    def __init__(self, api_key: str) -> None:
-        """Notion 클라이언트 초기화."""
-        self.api_key = api_key
-        self.client = Client(auth=self.api_key)
+    def __init__(self, api_key: str, stop_event: Event | None = None) -> None:
+        self.client = Client(auth=api_key, timeout_ms=5000)
+        self.stop_event = stop_event or Event()
+        self.retry_not_before = 0.0
+        # Authentication is checked by actual requests, so transient startup
+        # failures use the same durable scheduler as failures during operation.
 
-        notion_logger.info("Connecting to Notion API...")
-
-        # 연결 테스트 (일시 오류는 재시도, 인증 오류 등은 즉시 실패)
-        try:
-            self._request_with_retry("users.me", lambda: self.client.users.me())
-        except Exception as e:
-            raise ConnectionError(f"Unable to connect to Notion API with provided key: {e}")
+    def close(self) -> None:
+        self.client.close()
 
     def _request_with_retry(self, label: str, func: Callable[[], T]) -> T:
-        """Notion API 호출에 지수 백오프 재시도를 적용. Retry-After 헤더를 존중."""
         for attempt in range(_MAX_RETRIES + 1):
+            if self.stop_event.is_set():
+                raise InterruptedError("Shutdown requested")
             try:
                 return func()
-            except (HTTPResponseError, RequestTimeoutError) as e:
-                if not _is_retryable(e) or attempt == _MAX_RETRIES:
+            except (HTTPResponseError, RequestTimeoutError, httpx.TransportError) as exc:
+                retry_after = retry_after_seconds(exc)
+                if getattr(exc, "status", None) == 429:
+                    self.retry_not_before = max(
+                        self.retry_not_before, time.time() + max(1.0, retry_after)
+                    )
+                    raise  # Worker-wide cooldown; do not block other event intake.
+                if not _is_retryable(exc) or attempt == _MAX_RETRIES:
                     raise
-
-                # Retry-After 헤더 우선, 없으면 지수 백오프
-                delay = min(_BASE_DELAY * (2 ** attempt), _MAX_DELAY)
-                headers = getattr(e, "headers", None)
-                if headers is not None:
-                    retry_after = headers.get("Retry-After")
-                    if retry_after:
-                        try:
-                            delay = min(float(retry_after), _MAX_DELAY)
-                        except ValueError:
-                            pass
-
-                status = getattr(e, "status", "?")
-                notion_logger.warning(
-                    f"{label} failed (status={status}). "
-                    f"Retry {attempt + 1}/{_MAX_RETRIES} in {delay:.1f}s..."
-                )
-                time.sleep(delay)
-
-        # 도달하지 않음 (마지막 시도에서 raise)
+                if retry_after > _MAX_DELAY:
+                    raise  # Long waits belong to the scheduler.
+                delay = max(min(_BASE_DELAY * 2 ** attempt, _MAX_DELAY), retry_after)
+                notion_logger.warning(f"{label}: retry {attempt + 1}/{_MAX_RETRIES} in {delay:.1f}s")
+                if self.stop_event.wait(delay):
+                    raise InterruptedError("Shutdown requested") from exc
         raise RuntimeError("unreachable")
 
     def _convert_property(self, container: DockerContainerInfo) -> dict[str, Any]:
@@ -143,45 +163,49 @@ class NotionClient:
                 raise PageNotFoundError(page_id) from e
             raise
 
-    def find_page_id(self, database_id: str, container_name: str) -> str:
-        """데이터베이스에서 컨테이너 이름으로 페이지 ID 조회. 없거나 오류면 빈 문자열."""
-        notion_logger.debug(f"Finding page in database {database_id} for: {container_name}")
-        try:
-            response = cast(
-                dict[str, Any],
-                self._request_with_retry(
-                    f"find_page_id({container_name})",
-                    lambda: self.client.databases.query(
-                        database_id=database_id,
-                        filter={"property": "Name", "title": {"equals": container_name}},
-                    ),
-                ),
-            )
-            results = response.get("results") or []
-            if results:
-                return str(results[0].get("id", ""))
-            return ""
-        except Exception as e:
-            notion_logger.error(
-                f"Error finding page for {container_name} in database {database_id}: {e}"
-            )
-            return ""
+    def find_page_id(self, database_id: str, container_name: str) -> str | None:
+        """None only means a successful, empty search. All failures propagate."""
+        response = self._request_with_retry(
+            f"find_page_id({container_name})",
+            lambda: self.client.databases.query(
+                database_id=database_id,
+                filter={"property": "Name", "title": {"equals": container_name}},
+                page_size=2,
+            ),
+        )
+        if not isinstance(response, dict) or not isinstance(response.get("results"), list):
+            raise ValueError("Malformed Notion search response")
+        results = response["results"]
+        if len(results) > 1 or response.get("has_more"):
+            raise DuplicatePagesError(f"Multiple pages for {container_name} in {database_id}")
+        if not results:
+            return None
+        page_id = results[0].get("id")
+        if not isinstance(page_id, str) or not page_id:
+            raise ValueError("Missing page ID in Notion search response")
+        return page_id
 
     def create_page(self, database_id: str, container: DockerContainerInfo) -> str:
-        """Notion에 새 페이지 생성. 실패 시 빈 문자열."""
-        notion_logger.debug(f"Creating new page in database {database_id} for: {container.name}")
-        data = self._convert_property(container)
+        """Send creation once; uncertain responses must be reconciled by search."""
+        if self.stop_event.is_set():
+            raise InterruptedError("Shutdown requested")
         try:
-            page = cast(
-                dict[str, Any],
-                self._request_with_retry(
-                    f"create_page({container.name})",
-                    lambda: self.client.pages.create(
-                        parent={"database_id": database_id}, properties=data
-                    ),
-                ),
+            page = self.client.pages.create(
+                parent={"database_id": database_id},
+                properties=self._convert_property(container),
             )
-            return str(page.get("id", ""))
-        except Exception as e:
-            notion_logger.error(f"Error creating page for {container.name}: {e}")
-            return ""
+            page_id = page.get("id") if isinstance(page, dict) else None
+            if not isinstance(page_id, str) or not page_id:
+                raise ValueError("Missing page ID in creation response")
+            return page_id
+        except HTTPResponseError as exc:
+            if exc.status < 500 and exc.status != 408:
+                if exc.status == 429:
+                    self.retry_not_before = max(
+                        self.retry_not_before,
+                        time.time() + max(1.0, retry_after_seconds(exc)),
+                    )
+                raise  # Explicit rejection: no page was accepted.
+            raise AmbiguousCreateError(str(exc)) from exc
+        except Exception as exc:
+            raise AmbiguousCreateError(str(exc)) from exc

@@ -1,0 +1,15 @@
+.git
+.venv
+venv
+__pycache__
+**/__pycache__
+.pytest_cache
+.mypy_cache
+config/.env
+config/config.yaml
+data
+logs
+build
+dist
+*.spec
+.DS_Store

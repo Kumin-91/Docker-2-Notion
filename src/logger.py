@@ -9,7 +9,10 @@ if LOG_LEVEL not in ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]:
     LOG_LEVEL = "INFO"
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LOG_DIR = os.path.join(BASE_DIR, "logs")
+# PyInstaller extracts __file__ into a temporary directory. Use the executable
+# directory in a frozen build so /app/logs remains the mounted log location.
+RUNTIME_DIR = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else BASE_DIR
+LOG_DIR = os.path.join(RUNTIME_DIR, "logs")
 if not os.path.exists(LOG_DIR):
     os.makedirs(LOG_DIR)
 

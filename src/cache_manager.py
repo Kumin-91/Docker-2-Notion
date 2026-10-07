@@ -1,71 +1,69 @@
 import json
-import os
+import math
 import time
-from src.logger import cache_logger
+from typing import TypedDict
 
-# 캐시 엔트리: {container_name: {"page_id": str, "timestamp": float}}
-CacheData = dict[str, dict[str, str | float]]
+from src.logger import cache_logger
+from src.storage import identity, read_json, write_json
+
+
+class CacheEntry(TypedDict):
+    page_id: str
+    timestamp: float
 
 
 class CacheManager:
-    def __init__(self, cache_file: str = "data/cache.json", ttl_seconds: int = 300) -> None:
+    def __init__(self, cache_file: str = "data/cache.v2.json", ttl_seconds: int = 300) -> None:
         self.cache_file = cache_file
         self.ttl_seconds = ttl_seconds
-        self.cache_data: CacheData = self._load_cache()
-        cache_logger.info(
-            f"CacheManager initialized with cache file: {self.cache_file} and TTL: {self.ttl_seconds} seconds"
-        )
+        self.cache_data: dict[str, CacheEntry] = self._load_cache()
 
-    def _load_cache(self) -> CacheData:
-        """캐시 파일에서 데이터를 로드"""
-        cache_logger.info(f"Loading cache from file: {self.cache_file}")
-        if os.path.exists(self.cache_file):
-            with open(self.cache_file, "r", encoding="utf-8") as file:
-                try:
-                    return json.load(file)
-                except json.JSONDecodeError:
-                    cache_logger.error(f"Cache file {self.cache_file} contains invalid JSON.")
-                    return {}
-        cache_logger.info(f"Cache file {self.cache_file} does not exist. Starting with empty cache.")
-        return {}
+    def _load_cache(self) -> dict[str, CacheEntry]:
+        try:
+            data = read_json(self.cache_file)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            cache_logger.warning("Invalid page cache; rebuilding through Notion search.")
+            return {}
+        if data is None:
+            return {}
+        if not isinstance(data, dict) or data.get("version") != 2:
+            cache_logger.warning("Legacy or unsupported page cache ignored; DB ownership is unknown.")
+            return {}
+        entries = data.get("entries")
+        if not isinstance(entries, dict):
+            return {}
+        validated: dict[str, CacheEntry] = {}
+        for key, entry in entries.items():
+            if not isinstance(entry, dict):
+                continue
+            page_id, timestamp = entry.get("page_id"), entry.get("timestamp")
+            if (
+                isinstance(page_id, str) and page_id
+                and isinstance(timestamp, (int, float)) and math.isfinite(timestamp)
+            ):
+                validated[key] = {"page_id": page_id, "timestamp": float(timestamp)}
+        return validated
 
     def _save_cache(self) -> None:
-        """캐시 데이터를 파일에 저장"""
-        cache_logger.debug(f"Saving cache to file: {self.cache_file}")
-        os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
-        with open(self.cache_file, "w", encoding="utf-8") as file:
-            json.dump(self.cache_data, file, ensure_ascii=False, indent=4)
+        write_json(self.cache_file, {"version": 2, "entries": self.cache_data})
 
-    def get_page_id(self, container_name: str) -> str | None:
-        """컨테이너 이름으로 캐시된 페이지 ID를 조회. TTL 검사 포함."""
-        cache_logger.debug(f"Retrieving page ID from cache for container: {container_name}")
-        entry = self.cache_data.get(container_name)
-        if not entry:
+    def get_page_id(self, database_id: str, container_name: str) -> str | None:
+        key = identity(database_id, container_name)
+        entry = self.cache_data.get(key)
+        if entry is None:
             return None
-
-        saved_time = float(entry.get("timestamp", 0))
-        if time.time() - saved_time > self.ttl_seconds:
-            cache_logger.debug(
-                f"Cache entry for container {container_name} has expired. Removing from cache."
-            )
-            del self.cache_data[container_name]
+        if time.time() - entry["timestamp"] > self.ttl_seconds:
+            del self.cache_data[key]
             self._save_cache()
             return None
+        return entry["page_id"]
 
-        return str(entry.get("page_id"))
-
-    def set_page_id(self, container_name: str, page_id: str) -> None:
-        """컨테이너 이름에 대한 페이지 ID를 캐시에 저장"""
-        cache_logger.debug(f"Setting page ID in cache for container: {container_name}")
-        self.cache_data[container_name] = {
-            "page_id": page_id,
-            "timestamp": time.time(),
+    def set_page_id(self, database_id: str, container_name: str, page_id: str) -> None:
+        self.cache_data[identity(database_id, container_name)] = {
+            "page_id": page_id, "timestamp": time.time()
         }
         self._save_cache()
 
-    def remove_page_id(self, container_name: str) -> None:
-        """컨테이너 이름에 대한 캐시된 페이지 ID를 제거"""
-        cache_logger.debug(f"Removing page ID from cache for container: {container_name}")
-        if container_name in self.cache_data:
-            del self.cache_data[container_name]
+    def remove_page_id(self, database_id: str, container_name: str) -> None:
+        if self.cache_data.pop(identity(database_id, container_name), None) is not None:
             self._save_cache()

@@ -3,7 +3,9 @@ import ipaddress
 from typing import Any, Iterator
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from docker import from_env
+from dataclasses import dataclass
+from threading import Event
+from docker import from_env, DockerClient as SDKDockerClient
 from docker.errors import NotFound
 from config.settings import Settings
 from src.models import DockerContainerInfo
@@ -147,65 +149,70 @@ def to_local_iso(timestamp: str, timezone: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class DockerSnapshot:
+    container_ids: set[str]
+    containers: list[DockerContainerInfo]
+
+
 class DockerClient:
-    def __init__(self, settings: Settings) -> None:
-        """Docker 초기화 (설정 주입)."""
+    def __init__(self, settings: Settings, connect: bool = True, stop_event: Event | None = None) -> None:
         self.settings = settings
         self.docker_api_url = settings.DOCKER_API_URL
-        self.client = from_env(environment={"DOCKER_HOST": self.docker_api_url})
+        self._client: SDKDockerClient | None = None
+        self._stream: Any = None
+        self.stop_event = stop_event or Event()
+        if connect and not self.ping():
+            raise ConnectionError(f"Unable to connect to Docker at {self.docker_api_url}")
 
-        docker_logger.info(f"Connecting to Docker daemon at {self.docker_api_url}...")
-
-        if not self.client.ping():
-            docker_logger.error(f"Unable to connect to Docker daemon at {self.docker_api_url}")
-            raise ConnectionError(f"Unable to connect to Docker daemon at {self.docker_api_url}")
+    @property
+    def client(self) -> SDKDockerClient:
+        if self._client is None:
+            self._client = from_env(environment={"DOCKER_HOST": self.docker_api_url}, timeout=5)
+        return self._client
 
     def disconnect(self) -> None:
-        """Docker 클라이언트 연결 종료."""
-        docker_logger.info("Disconnecting from Docker daemon...")
-        self.client.close()
+        try:
+            if self._stream is not None:
+                self._stream.close()
+        finally:
+            self._stream = None
+            if self._client is not None:
+                self._client.close()
+                self._client = None
 
     def ping(self) -> bool:
-        """Docker 데몬 연결 상태 확인."""
         try:
             return bool(self.client.ping())
         except Exception:
             return False
 
     def reconnect(self) -> bool:
-        """클라이언트를 재생성하여 데몬에 재연결. 성공 여부를 반환."""
-        docker_logger.info("Reconnecting to Docker daemon...")
         try:
-            self.client.close()
+            self.disconnect()
+            return self.ping()
         except Exception:
-            pass
-        self.client = from_env(environment={"DOCKER_HOST": self.docker_api_url})
-        return self.ping()
+            return False
 
     def monitor_changes(self, filters: dict[str, Any] | None = None) -> Iterator[dict[str, Any]]:
-        """Docker 이벤트 모니터링 생성기."""
-        docker_logger.info("Starting to monitor Docker events...")
-        return self.client.events(decode=True, filters=filters)
+        self._stream = self.client.events(decode=True, filters=filters)
+        return self._stream
+
+    def snapshot(self) -> DockerSnapshot:
+        """An authoritative listing; any transport/inspect failure propagates."""
+        listed = self.client.containers.list(all=True, sparse=True)
+        ids = {str(container.id) for container in listed if container.id}
+        infos = []
+        for container_id in ids:
+            if self.stop_event.is_set():
+                raise InterruptedError("Shutdown requested")
+            info = self.get_container_info(container_id)
+            if info is not None:
+                infos.append(info)
+        return DockerSnapshot(ids, infos)
 
     def list_all_containers(self) -> list[DockerContainerInfo]:
-        """모든 Docker 컨테이너 정보를 리스트로 반환."""
-        docker_logger.info("Listing all Docker containers...")
-        containers = []
-        try:
-            container_list = self.client.containers.list(all=True)
-
-            for c in container_list:
-                if not c.id:
-                    continue
-                info = self.get_container_info(str(c.id))
-                if info:
-                    containers.append(info)
-                else:
-                    docker_logger.error(f"Failed to get info for container {c.id}")
-        except Exception as e:
-            docker_logger.error(f"Error listing containers: {e}")
-
-        return containers
+        return self.snapshot().containers
 
     def get_container_info(self, container_id: str) -> DockerContainerInfo | None:
         """컨테이너 ID(또는 이름)로 상세 정보를 조회하여 DockerContainerInfo로 반환."""
@@ -236,6 +243,7 @@ class DockerClient:
             )
         except NotFound:
             return None
-        except Exception as e:
-            docker_logger.error(f"Error getting info for {container_id}: {e}")
-            return None
+        except Exception:
+            # None is reserved for an actual 404. A connection failure must not
+            # be interpreted as container deletion.
+            raise
