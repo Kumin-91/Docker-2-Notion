@@ -33,6 +33,7 @@ def test_manual_deploy_respects_explicit_empty_network(tmp_path, network, expect
     assert result.returncode == 0, result.stderr
     calls = [json.loads(line) for line in capture.read_text().splitlines()]
     run = next(call for call in calls if call[0] == "run")
+    assert "/var/run/docker.sock:/var/run/docker.sock:ro" in run
     if expected is None:
         assert "--network" not in run
     else:

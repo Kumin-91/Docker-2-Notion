@@ -76,7 +76,7 @@ pipeline {
                 sh '''
                     docker run -d \
                         --name ${PROJECT_NAME} \
-                        -v /var/run/docker.sock:/var/run/docker.sock \
+                        -v /var/run/docker.sock:/var/run/docker.sock:ro \
                         -v ${HOST_DIR}/config:/app/config \
                         -v ${HOST_DIR}/logs:/app/logs \
                         -v ${HOST_DIR}/data:/app/data \

@@ -8,13 +8,20 @@ from src.cache_manager import CacheManager
 from src.sync_state import SyncState
 
 
-def test_main_cleanup_saves_state_and_closes_both_connections(tmp_path, monkeypatch):
+@pytest.mark.parametrize("health_cleanup_error", [False, True])
+def test_main_cleanup_saves_state_and_closes_both_connections(tmp_path, monkeypatch, health_cleanup_error):
     state = SyncState(str(tmp_path / "state.json"))
     worker_docker, event_docker = MagicMock(), MagicMock()
     notion, reader = MagicMock(), MagicMock()
     reader.ident = 1
     reader.inbox = MagicMock()
-    monkeypatch.setattr(main, "load_settings", lambda: SimpleNamespace(NOTION_API_KEY="fake"))
+    monkeypatch.setattr(main, "load_settings", lambda: SimpleNamespace(
+        NOTION_API_KEY="fake", DOCKER_API_URL="unix:///test/docker.sock",
+    ))
+    health = MagicMock()
+    if health_cleanup_error:
+        health.close.side_effect = PermissionError("health file cannot be removed")
+    monkeypatch.setattr(main, "HealthReporter", lambda *args: health)
     monkeypatch.setattr(main, "SyncState", lambda: state)
     monkeypatch.setattr(main, "CacheManager", lambda: CacheManager(str(tmp_path / "cache.json")))
     monkeypatch.setattr(main, "DockerClient", MagicMock(side_effect=[worker_docker, event_docker]))
@@ -31,4 +38,5 @@ def test_main_cleanup_saves_state_and_closes_both_connections(tmp_path, monkeypa
     reader.join.assert_called_once_with(timeout=5)
     worker_docker.disconnect.assert_called_once()
     notion.close.assert_called_once()
+    health.close.assert_called_once()
     assert SyncState(state.path).jobs == {}

@@ -52,7 +52,7 @@ echo "==> 4/4 새 컨테이너 실행"
 # shellcheck disable=SC2086  # NOTION_ENV/NETWORK_ARG 는 빈 값일 때 인자에서 빠지도록 의도적으로 분할
 docker run -d \
   --name "${PROJECT_NAME}" \
-  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /var/run/docker.sock:/var/run/docker.sock:ro \
   -v "${HOST_DIR}/config:/app/config" \
   -v "${HOST_DIR}/logs:/app/logs" \
   -v "${HOST_DIR}/data:/app/data" \

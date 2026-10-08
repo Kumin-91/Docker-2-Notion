@@ -32,4 +32,9 @@ ENV LOG_LEVEL=INFO
 # 실행 시: -v ./logs:/app/logs -v ./config:/app/config -v ./data:/app/data
 VOLUME ["/app/logs", "/app/config", "/app/data"]
 
+# The probe handles the 180-second failure grace itself; do not add another
+# multi-retry delay on top. Allow time for the one-file executable to unpack.
+HEALTHCHECK --interval=30s --timeout=15s --start-period=60s --retries=1 \
+    CMD ["/app/Docker-2-Notion", "--healthcheck"]
+
 CMD ["./Docker-2-Notion"]
