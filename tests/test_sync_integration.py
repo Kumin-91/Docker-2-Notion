@@ -8,10 +8,12 @@ from src.sync_service import SyncService
 from src.sync_state import SyncState
 
 
-def test_accepted_creation_with_lost_response_is_recovered_after_restart(harness):
+def test_accepted_creation_with_lost_response_is_recovered_after_restart(harness, notion_status_schema):
     h = harness
     created, updates = [], []
     def handler(request):
+        if request.method == 'GET' and request.url.path == '/v1/databases/db-a':
+            return httpx.Response(200, json=notion_status_schema)
         if request.url.path.endswith('/query'):
             return httpx.Response(200, json={'results': [{'id': 'accepted-page'}] if created else []})
         if request.method == 'POST' and request.url.path.endswith('/pages'):
@@ -43,10 +45,12 @@ def test_accepted_creation_with_lost_response_is_recovered_after_restart(harness
         notion.close()
 
 
-def test_real_sdk_search_outage_never_reaches_creation(harness, monkeypatch):
+def test_real_sdk_search_outage_never_reaches_creation(harness, monkeypatch, notion_status_schema):
     h = harness
     calls = []
     def handler(request):
+        if request.method == 'GET' and request.url.path == '/v1/databases/db-a':
+            return httpx.Response(200, json=notion_status_schema)
         calls.append((request.method, request.url.path))
         return httpx.Response(503, json={'code': 'service_unavailable', 'message': 'temporary outage'})
     notion = NotionClient('fake-token', h.stop)

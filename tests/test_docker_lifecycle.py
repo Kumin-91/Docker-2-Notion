@@ -97,6 +97,8 @@ def test_stream_opens_before_snapshot_notification():
     assert inbox.get_nowait().event is None
     assert inbox.get_nowait().event == {"Action": "start"}
     assert FILTER["label"] == "d2n.enabled"
+    assert "health_status" in FILTER["event"]
+    assert "update" in FILTER["event"]
 
 
 def test_real_thread_can_stop_a_blocking_stream():
@@ -131,3 +133,18 @@ def test_shutdown_interrupts_snapshot_before_inspection(docker_client):
     with pytest.raises(InterruptedError):
         client.snapshot()
     sdk.containers.get.assert_not_called()
+
+
+@pytest.mark.parametrize("state, health, expected", [
+    ("running", "healthy", "healthy"), ("running", "unhealthy", "unhealthy"),
+    ("running", "starting", "starting"), ("running", "", "running"),
+    ("exited", "healthy", "exited"), ("paused", "unhealthy", "paused"),
+])
+def test_inspection_includes_health_priority(docker_client, state, health, expected):
+    client, sdk = docker_client
+    attrs = {"Config": {"Labels": {"d2n.enabled": "true"}}, "State": {}}
+    if health:
+        attrs["State"]["Health"] = {"Status": health}
+    sdk.containers.get.return_value = SimpleNamespace(id="one", name="web", status=state, attrs=attrs)
+    info = client.get_container_info("one")
+    assert info.status == expected

@@ -231,7 +231,10 @@ class DockerClient:
             return DockerContainerInfo(
                 container_id=str(container.id or ""),
                 name=str(container.name or "").lstrip("/"),
-                status=normalize_status(container.status),
+                status=normalize_status(
+                    container.status,
+                    ((attrs.get("State", {}) or {}).get("Health", {}) or {}).get("Status", ""),
+                ),
                 seen=datetime.now(ZoneInfo(self.settings.TIMEZONE)).isoformat(),
                 ip=parse_ip(attrs),
                 port=parse_ports(attrs),

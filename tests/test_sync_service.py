@@ -327,6 +327,22 @@ def test_events_disabled_by_label_are_ignored(harness):
     assert not h.state.jobs
 
 
+@pytest.mark.parametrize("health", ["healthy", "unhealthy", "starting"])
+def test_health_event_updates_existing_page_from_latest_inspection(harness, health):
+    h = harness
+    h.cache.set_page_id("db-a", "web", "page-a")
+    current = replace(h.container, status=health)
+    h.docker.get_container_info.return_value = current
+    h.service.submit_event({"Action": f"health_status: {health}", "Actor": {
+        "ID": h.container.container_id, "Attributes": {
+            "name": "web", "d2n.enabled": "true", "d2n.database": "A",
+        },
+    }})
+    h.service.tick()
+    h.notion.update_page.assert_called_once_with("page-a", current)
+    h.notion.create_page.assert_not_called()
+
+
 def test_destroy_event_is_persisted_and_db_scoped(harness):
     h = harness
     h.service.submit_event({"Action": "destroy", "Actor": {"ID": "one", "Attributes": {

@@ -1,8 +1,10 @@
 import time
 import math
+import hashlib
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from threading import Event
+from pathlib import Path
 import httpx
 from typing import Any, Callable, TypeVar, cast
 from notion_client import Client
@@ -14,6 +16,8 @@ from notion_client.errors import (
 )
 from src.models import DockerContainerInfo
 from src.logger import notion_logger
+from src.status_schema import status_options, status_schema_matches, status_schema_update
+from src.storage import normalize_database_id, read_json, write_json
 
 T = TypeVar("T")
 
@@ -77,11 +81,58 @@ class NotionClient:
         self.client = Client(auth=api_key, timeout_ms=5000)
         self.stop_event = stop_event or Event()
         self.retry_not_before = 0.0
+        self._prepared_status_databases: set[str] = set()
         # Authentication is checked by actual requests, so transient startup
         # failures use the same durable scheduler as failures during operation.
 
     def close(self) -> None:
         self.client.close()
+
+    def ensure_status_schema(self, database_id: str) -> None:
+        """Reconcile options once per process, with backup before any mutation."""
+        database_id = normalize_database_id(database_id)
+        if database_id in self._prepared_status_databases:
+            return
+        schema = self._request_with_retry(
+            f"status_schema({database_id})",
+            lambda: self.client.databases.retrieve(database_id=database_id),
+        )
+        if not isinstance(schema, dict) or not isinstance(schema.get("properties"), dict):
+            raise ValueError("Invalid Notion database schema")
+        current = schema["properties"].get("Status")
+        options = status_options(current) if current is not None else {}
+        if not status_schema_matches(options):
+            properties = status_schema_update(options)
+            key = hashlib.sha256(database_id.encode()).hexdigest()
+            backup_path = f"data/notion-status-backup.{key}.json"
+            # Preserve the pre-migration configuration across retries/restarts.
+            # Invalid/unreadable backups must not be overwritten silently.
+            backup = read_json(backup_path)
+            if backup is None and not Path(backup_path).exists():
+                write_json(backup_path, {
+                    "version": 1, "database_id": database_id,
+                    "status_property": current, "captured_at": time.time(),
+                })
+            elif (
+                not isinstance(backup, dict) or backup.get("version") != 1
+                or backup.get("database_id") != database_id
+                or "status_property" not in backup
+            ):
+                raise ValueError(f"Invalid Status backup: {backup_path}")
+            self._request_with_retry(
+                f"update_status_schema({database_id})",
+                lambda: self.client.databases.update(database_id=database_id, properties=properties),
+            )
+            schema = self._request_with_retry(
+                f"verify_status_schema({database_id})",
+                lambda: self.client.databases.retrieve(database_id=database_id),
+            )
+            if not isinstance(schema, dict) or not isinstance(schema.get("properties"), dict):
+                raise ValueError("Invalid Notion database schema after Status update")
+            if not status_schema_matches(status_options(schema["properties"].get("Status"))):
+                raise ValueError("Notion Status options/groups/colors did not match the requested configuration")
+            notion_logger.info(f"Configured Status options for DB {database_id}")
+        self._prepared_status_databases.add(database_id)
 
     def _request_with_retry(self, label: str, func: Callable[[], T]) -> T:
         for attempt in range(_MAX_RETRIES + 1):

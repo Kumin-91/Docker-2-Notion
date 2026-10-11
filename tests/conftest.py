@@ -11,6 +11,20 @@ from src.models import DockerContainerInfo
 from src.notion_client import NotionClient
 from src.sync_service import SyncService
 from src.sync_state import SyncState
+from src.status import STATUS_OPTIONS
+
+
+@pytest.fixture
+def notion_status_schema():
+    return {"properties": {"Status": {
+        "id": "stat", "type": "status", "status": {
+            "options": [{"id": option["name"], "name": option["name"], "color": option["color"]}
+                        for option in STATUS_OPTIONS],
+            "groups": [{"name": group, "option_ids": [option["name"] for option in STATUS_OPTIONS
+                                                      if option["group"] == group]}
+                       for group in ("To-do", "In progress", "Complete")],
+        },
+    }}}
 
 
 @pytest.fixture

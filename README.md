@@ -16,7 +16,7 @@
 
 ## 💡 주요 특징
 
-* **실시간 이벤트 모니터링:** `create` `start` `stop` `die` 등 도커 이벤트를 실시간으로 감지하여 노션에 즉시 반영합니다.
+* **실시간 이벤트 모니터링:** 실행·종료·삭제와 `health_status` 변경을 감지하여 노션에 반영합니다.
 
 * **라벨 기반 필터링:** 모든 컨테이너가 아닌, `d2n.enabled=true` 라벨이 붙은 컨테이너만 골라서 관리합니다.
 
@@ -38,20 +38,24 @@
 
     * **Image:** `rich_text`
 
-    * **Stacks:** `multi_select` (docker-compose 사용 시. 옵션은 자동 생성됨)
-
     * **Status:** `status`
 
-      ![notion_page_status](./images/notion_page_status.png)
+      To-do는 확인 필요, In progress는 중간 단계, Complete는 상태 전환이 끝난 경우로 구분합니다. 옵션·색상·그룹 배정은 시작 시 아래 목록으로 맞춥니다. 불필요한 기존 옵션은 제거하며, 원래 설정은 `data/notion-status-backup.*.json`에 보관합니다. **그룹 자체의 색상**은 Notion UI에서 설정하세요.
 
-      | 노션 Status 값 | 관련 도커 이벤트/상태 | 의미 |
-      | --- | --- | --- |
-      | running | start | 컨테이너가 정상적으로 가동 중인 상태 |
-      | exited | stop, die | 컨테이너 프로세스가 종료되어 멈춘 상태 |
-      | removed | destroy | 컨테이너가 삭제되어 더 이상 존재하지 않는 상태 |
-      | restarting | restarting | 컨테이너가 재시작 루프에 빠졌거나 다시 켜지는 중 |
-      | created | create | 컨테이너가 생성되었으나 아직 실행 전인 상태 |
-      | paused | paused | 컨테이너가 일시 정지된 상태 |
+      | Status | 카테고리 | 옵션 색상 | 의미 |
+      | --- | --- | --- | --- |
+      | created | To-do | 빨강 | 생성 후 실행 전 |
+      | dead | To-do | 빨강 | 비정상 상태 |
+      | starting | In progress | 파랑 | 실행 중, Healthcheck 결과 대기 |
+      | restarting | In progress | 파랑 | 재시작 중 |
+      | paused | In progress | 파랑 | 일시 정지 |
+      | unhealthy | In progress | 파랑 | 실행 중, Healthcheck 실패 |
+      | running | Complete | 초록 | 실행 중, Healthcheck 없음 |
+      | healthy | Complete | 초록 | 실행 중, Healthcheck 정상 |
+      | exited | Complete | 회색 | 프로세스 종료 |
+      | removed | Complete | 회색 | 삭제 진행 또는 완료 |
+
+    * **Stacks:** `multi_select` (docker-compose 사용 시. 옵션은 자동 생성됨)
 
     * **IP:** `rich_text`
 
@@ -140,7 +144,7 @@
 
 * **src/docker_client.py:** 도커 데몬으로부터 실행 중인 컨테이너 정보를 수집합니다. 멀티 네트워크 IP, 포트 바인딩 IP(IPv4), host 네트워크, 동기화 전용 라벨(`d2n.enabled`, `d2n.database`)을 파싱하며, 파싱 로직은 SDK 호출과 분리된 순수 함수로 구현되어 단위 테스트가 가능합니다.
 
-* **src/notion_client.py:** Notion 속성 변환과 API 호출을 담당합니다. 검색 실패와 검색 결과 없음을 구분하고, 생성 요청은 한 번만 전송하여 응답 유실 시 재검색으로 확인합니다.
+* **src/notion_client.py:** Status 옵션 초기화, 속성 변환, API 호출을 담당합니다. 검색 실패와 검색 결과 없음을 구분하고, 생성 요청은 한 번만 전송하여 응답 유실 시 재검색으로 확인합니다.
 
 * **src/cache_manager.py:** `(실제 DB ID, 컨테이너 이름)`별 페이지 ID를 `data/cache.v2.json`에 저장합니다. TTL은 300초이며 기존 `data/cache.json`은 소속 DB를 확정할 수 없어 재사용하지 않고 보존합니다.
 
@@ -158,7 +162,7 @@
 
     * 노출만 됨(EXPOSE, 호스트 미바인딩): `9000/tcp`
 
-* **상태 정규화:** Docker의 `dead`/`removing` 같은 상태도 Notion 옵션(`exited`/`removed`)으로 자동 변환되어 업데이트 실패를 방지합니다.
+* **상태 표시:** 실행 중이면 `starting`·`healthy`·`unhealthy`를 우선 표시합니다. `dead`는 별도로 표시하고, `removing`은 `removed`로 변환합니다.
 
 * **스택 자동 태깅:** docker-compose 프로젝트(`com.docker.compose.project`, Swarm은 `com.docker.stack.namespace`) 이름을 `Stacks`(multi_select) 속성에 자동으로 채웁니다. 없던 옵션은 Notion이 자동 생성하며, 스택이 없는 단독 컨테이너는 해당 속성을 건드리지 않아 수동 입력값을 보존합니다.
 

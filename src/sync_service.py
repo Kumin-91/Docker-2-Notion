@@ -1,7 +1,7 @@
 """Single-owner Notion synchronizer with durable, coalesced retries."""
 
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from threading import Event
 from typing import Any, Callable
@@ -28,6 +28,13 @@ INITIAL_RETRY = 30.0
 MAX_RETRY = 300.0
 
 
+@dataclass
+class SchemaJob:
+    due: float = 0.0
+    attempts: int = 0
+    blocked: str | None = None
+
+
 class SyncService:
     def __init__(
         self, docker: DockerClient, notion: NotionClient, cache: CacheManager,
@@ -43,6 +50,10 @@ class SyncService:
         self.clock = clock
         self.snapshot_due = 0.0
         self.snapshot_attempts = 0
+        self.schema_jobs = {
+            normalize_database_id(db): SchemaJob()
+            for db in getattr(settings, "DB_IDS", {}).values()
+        }
         # Operator fixes to credentials/schema are reevaluated after restart.
         for job in state.jobs.values():
             if job.blocked is not None:
@@ -123,6 +134,8 @@ class SyncService:
         )
 
     def _sync(self, job: SyncJob) -> str | None:
+        # Also covers durable history pointing to a previously configured DB.
+        self.notion.ensure_status_schema(job.database_id)
         container = job.container
         page_id = self.cache.get_page_id(job.database_id, container.name)
         if page_id is not None:
@@ -158,6 +171,27 @@ class SyncService:
             raise
         self.cache.set_page_id(job.database_id, container.name, page_id)
         return page_id
+
+    def _run_schema(self, database_id: str, job: SchemaJob) -> None:
+        try:
+            self.notion.ensure_status_schema(database_id)
+            del self.schema_jobs[database_id]
+        except InterruptedError:
+            return
+        except Exception as exc:
+            if isinstance(exc, OSError) and not _is_retryable(exc):
+                raise
+            if _is_retryable(exc):
+                delay = max(
+                    min(INITIAL_RETRY * 2 ** min(job.attempts, 4), MAX_RETRY),
+                    retry_after_seconds(exc),
+                )
+                job.attempts += 1
+                job.due = self.clock() + delay
+                main_logger.warning(f"Status configuration for DB {database_id} deferred {delay:.1f}s: {exc}")
+            else:
+                job.blocked = str(exc)
+                main_logger.error(f"Status configuration for DB {database_id} blocked; correct and restart: {exc}")
 
     def _run_job(self, key: str, job: SyncJob) -> None:
         try:
@@ -223,8 +257,15 @@ class SyncService:
         now = self.clock()
         if now < self.notion.retry_not_before:
             return
+        schemas_due = [(db, job) for db, job in self.schema_jobs.items()
+                       if job.blocked is None and job.due <= now]
+        if schemas_due:
+            db, schema_job = min(schemas_due, key=lambda item: item[1].due)
+            self._run_schema(db, schema_job)
+            return
         due = [(key, job) for key, job in self.state.jobs.items()
-               if job.blocked is None and job.due <= now]
+               if job.blocked is None and job.due <= now
+               and job.database_id not in self.schema_jobs]
         if due:
             key, job = min(due, key=lambda item: item[1].due)
             self._run_job(key, job)
@@ -233,5 +274,8 @@ class SyncService:
         now = self.clock()
         times = [self.snapshot_due]
         times.extend(max(job.due, self.notion.retry_not_before)
-                     for job in self.state.jobs.values() if job.blocked is None)
+                     for job in self.schema_jobs.values() if job.blocked is None)
+        times.extend(max(job.due, self.notion.retry_not_before)
+                     for job in self.state.jobs.values()
+                     if job.blocked is None and job.database_id not in self.schema_jobs)
         return max(0.0, min(1.0, min(times) - now))
