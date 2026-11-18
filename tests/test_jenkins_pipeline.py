@@ -35,6 +35,33 @@ def test_test_stage_checks_container_exit_status(tmp_path, container_exit, expec
     assert "--network ci-outbound" in create
 
 
+def test_docker_build_stage_uses_configured_network(tmp_path):
+    pipeline = Path("Jenkinsfile").read_text()
+    stage = pipeline.split("stage('Docker build')", 1)[1]
+    script = re.search(r"sh '''(.*?)'''", stage, re.S).group(1)
+    fake_docker = tmp_path / "docker"
+    fake_docker.write_text(
+        '#!/bin/sh\n'
+        'if [ "$1" = build ]; then [ "$DOCKER_BUILDKIT" = 0 ] || exit 2; fi\n'
+        'printf "%s\\n" "$*"\n'
+    )
+    fake_docker.chmod(0o755)
+
+    result = subprocess.run(
+        ["/bin/sh", "-e", "-c", script], capture_output=True, text=True,
+        env={
+            **os.environ, "PATH": str(tmp_path), "NETWORK": "ci-outbound", "DOCKER_BUILDKIT": "1",
+            "PROJECT_NAME": "d2n", "PROJECT_STATUS": "stable", "BUILD_NUMBER": "42",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        "build --network ci-outbound -t d2n:stable-42 .",
+        "tag d2n:stable-42 d2n:latest",
+    ]
+
+
 @pytest.mark.parametrize("health", ["healthy", "unhealthy"])
 def test_deployment_checks_new_container_and_mounts_socket_read_only(tmp_path, health):
     pipeline = Path("Jenkinsfile").read_text()

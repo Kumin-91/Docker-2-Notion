@@ -11,7 +11,7 @@
 #
 # 덮어쓸 수 있는 환경변수:
 #   HOST_DIR(기본 /docker/d2n), LOG_LEVEL(INFO), TZ(Asia/Seoul),
-#   D2N_DATABASE(Jenkins), NETWORK(net_outbound, 빈 값이면 기본 브리지 사용)
+#   D2N_DATABASE(Jenkins), NETWORK(실행 시 net_outbound, 빈 값이면 기본 브리지)
 set -eu
 
 PROJECT_NAME="d2n"
@@ -30,7 +30,7 @@ if [ ! -f "${HOST_DIR}/config/config.yaml" ]; then
 fi
 
 echo "==> 2/4 도커 이미지 빌드 (${PROJECT_NAME}:${IMAGE_TAG})"
-docker build -t "${PROJECT_NAME}:${IMAGE_TAG}" .
+DOCKER_BUILDKIT=0 docker build --network net_outbound -t "${PROJECT_NAME}:${IMAGE_TAG}" .
 docker tag "${PROJECT_NAME}:${IMAGE_TAG}" "${PROJECT_NAME}:latest"
 
 echo "==> 3/4 기존 컨테이너 정리"

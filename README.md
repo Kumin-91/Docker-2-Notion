@@ -109,15 +109,16 @@
   | `LOG_LEVEL` | 로그 레벨 | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
   | `TZ` | 타임존 설정 | `Asia/Seoul` | `Asia/Japan`, `America/New_York` |
 
-* 도커 이미지를 빌드하고, 필요한 볼륨과 환경 변수를 주입하여 컨테이너로 실행합니다.
+* 빌드와 실행에는 외부 접속이 가능한 기존 `net_outbound` 네트워크를 사용합니다. 아래 빌드 명령은 Docker 레거시 빌더가 필요합니다.
 
   ```Bash
   # 1. 이미지 빌드 (v0.1.0-beta4)
-  docker build . -t d2n:beta4
+  DOCKER_BUILDKIT=0 docker build --network net_outbound -t d2n:beta4 .
 
   # 2. 실행 (환경 변수 주입 및 볼륨 마운트)
   docker run -d \
     --name d2n-service \
+    --network net_outbound \
     --restart unless-stopped \
     -v /var/run/docker.sock:/var/run/docker.sock:ro \
     -v ~/d2n/config:/app/config \

@@ -56,7 +56,7 @@ pipeline {
         stage('Docker build') {
             steps {
                 sh '''
-                    docker build -t ${PROJECT_NAME}:${PROJECT_STATUS}-${BUILD_NUMBER} .
+                    DOCKER_BUILDKIT=0 docker build --network "${NETWORK}" -t ${PROJECT_NAME}:${PROJECT_STATUS}-${BUILD_NUMBER} .
                     docker tag ${PROJECT_NAME}:${PROJECT_STATUS}-${BUILD_NUMBER} ${PROJECT_NAME}:latest
                 '''
             }
