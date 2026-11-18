@@ -1,15 +1,12 @@
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
-from threading import Event
-from unittest.mock import MagicMock
 
 import httpx
 import pytest
-from notion_client import Client
-from notion_client.errors import HTTPResponseError, RequestTimeoutError
+from notion_client.errors import APIResponseError, HTTPResponseError, RequestTimeoutError
 
 from src.notion_client import (
-    AmbiguousCreateError, DuplicatePagesError, NotionClient, retry_after_seconds,
+    AmbiguousCreateError, DuplicatePagesError, PageNotFoundError, retry_after_seconds,
 )
 
 
@@ -19,11 +16,8 @@ def http_error(status=503, retry_after=None):
 
 
 @pytest.fixture
-def client(monkeypatch):
-    instance = NotionClient.__new__(NotionClient)
-    instance.client = MagicMock()
-    instance.stop_event = Event()
-    instance.retry_not_before = 0.0
+def client(monkeypatch, mock_notion):
+    instance = mock_notion
     waits = []
     monkeypatch.setattr(instance.stop_event, "wait", lambda delay: waits.append(delay) or False)
     instance.waits = waits
@@ -120,9 +114,17 @@ def test_retry_after_validation(value, expected):
     assert retry_after_seconds(http_error(429, value)) == expected
 
 
-def test_retry_after_http_date():
-    date = format_datetime(datetime.now(timezone.utc) + timedelta(seconds=60), usegmt=True)
-    assert 58 <= retry_after_seconds(http_error(429, date)) <= 60
+def test_retry_after_http_date(monkeypatch):
+    now = datetime(2026, 11, 17, tzinfo=timezone.utc)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now
+
+    monkeypatch.setattr("src.notion_client.datetime", FixedDateTime)
+    date = format_datetime(now + timedelta(seconds=60), usegmt=True)
+    assert retry_after_seconds(http_error(429, date)) == 60
 
 
 def test_shutdown_interrupts_short_retry(client, monkeypatch):
@@ -140,21 +142,47 @@ def test_shutdown_prevents_creation(client, container):
     client.client.pages.create.assert_not_called()
 
 
-def test_real_sdk_transport_distinguishes_failure_from_missing(monkeypatch):
+def test_real_sdk_transport_distinguishes_failure_from_missing(monkeypatch, notion_transport):
     responses = [httpx.Response(503, json={"code": "service_unavailable", "message": "later"})] * 5
     responses.append(httpx.Response(200, json={"results": []}))
     calls = []
     def handler(request):
         calls.append(request)
         return responses.pop(0)
-    notion = NotionClient("test-token")
-    notion.client.close()
-    notion.client = Client(client=httpx.Client(transport=httpx.MockTransport(handler)), auth="test-token")
+    notion = notion_transport(handler)
     monkeypatch.setattr(notion.stop_event, "wait", lambda delay: False)
-    try:
-        with pytest.raises(HTTPResponseError):
-            notion.find_page_id("db", "web")
-        assert notion.find_page_id("db", "web") is None
-        assert len(calls) == 6
-    finally:
-        notion.close()
+    with pytest.raises(HTTPResponseError):
+        notion.find_page_id("db", "web")
+    assert notion.find_page_id("db", "web") is None
+    assert len(calls) == 6
+
+
+@pytest.mark.parametrize("status, code, expected", [
+    (404, "object_not_found", PageNotFoundError),
+    (403, "restricted_resource", APIResponseError),
+    (400, "validation_error", APIResponseError),
+    (404, None, HTTPResponseError),
+])
+def test_real_sdk_page_update_only_translates_object_not_found(notion_transport, container, status, code, expected):
+    calls = []
+
+    def handler(request):
+        calls.append((request.method, request.url.path))
+        if code is None:
+            return httpx.Response(status, text="Non-JSON upstream response")
+        return httpx.Response(status, json={"code": code, "message": "Page update failed"})
+
+    notion = notion_transport(handler)
+    with pytest.raises(expected) as error:
+        notion.update_page("page-a", container)
+
+    assert calls == [("PATCH", "/v1/pages/page-a")]
+    assert type(error.value) is expected
+    original = error.value
+    if isinstance(original, PageNotFoundError):
+        assert original.page_id == "page-a"
+        original = original.__cause__
+        assert isinstance(original, APIResponseError)
+    assert original.status == status
+    if code is not None:
+        assert original.code == code

@@ -7,8 +7,16 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.parametrize("network, expected", [(None, "net_outbound"), ("", None), ("custom-net", "custom-net")])
-def test_manual_deploy_respects_explicit_empty_network(tmp_path, network, expected):
+@pytest.mark.parametrize(
+    "network, expected, health",
+    [
+        (None, "net_outbound", "healthy"),
+        ("", None, "healthy"),
+        ("custom-net", "custom-net", "healthy"),
+        ("", None, "unhealthy"),
+    ],
+)
+def test_manual_deploy_passes_network_and_gates_success_on_health(tmp_path, network, expected, health):
     host_dir = tmp_path / "host"
     (host_dir / "config").mkdir(parents=True)
     (host_dir / "config" / "config.yaml").write_text("targets: {}")
@@ -19,20 +27,30 @@ def test_manual_deploy_respects_explicit_empty_network(tmp_path, network, expect
         'import json, os, sys\n'
         'with open(os.environ["D2N_TEST_CAPTURE"], "a") as file:\n'
         '    file.write(json.dumps(sys.argv[1:]) + "\\n")\n'
+        'if sys.argv[1] == "run":\n'
+        '    print("new-container-id")\n'
+        'elif sys.argv[1] == "inspect":\n'
+        '    print("running 0", os.environ["D2N_TEST_HEALTH"])\n'
     )
     fake_docker.chmod(0o755)
     env = {
         **os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}",
         "HOST_DIR": str(host_dir), "D2N_TEST_CAPTURE": str(capture),
         "NOTION_API_KEY": "fake-test-token",
+        "D2N_TEST_HEALTH": health,
     }
     env.pop("NETWORK", None)
     if network is not None:
         env["NETWORK"] = network
     result = subprocess.run(["/bin/sh", str(Path("deploy.sh").resolve())], env=env, capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
+    assert (result.returncode == 0) is (health == "healthy"), result.stderr
     calls = [json.loads(line) for line in capture.read_text().splitlines()]
     run = next(call for call in calls if call[0] == "run")
+    inspect = next(call for call in calls if call[0] == "inspect")
+    assert inspect[-1] == "new-container-id"
+    assert (["image", "prune", "-f"] in calls) is (health == "healthy")
+    if health == "unhealthy":
+        assert "running 0 unhealthy" in result.stderr
     assert "/var/run/docker.sock:/var/run/docker.sock:ro" in run
     if expected is None:
         assert "--network" not in run

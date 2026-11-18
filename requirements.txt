@@ -8,9 +8,7 @@ h11==0.16.0
 httpcore==1.0.9
 httpx==0.28.1
 idna==3.11
-librt==0.7.8
 notion-client==2.2.1
-pathspec==1.0.3
 pycparser==3.0
 python-dotenv==1.2.1
 PyYAML==6.0.3

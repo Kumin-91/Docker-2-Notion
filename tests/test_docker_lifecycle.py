@@ -8,7 +8,7 @@ from docker.errors import NotFound
 from requests.exceptions import ConnectionError
 
 from src.docker_client import DockerClient
-from src.event_reader import DockerEventReader, FILTER
+from src.event_reader import DockerEventReader
 
 
 @pytest.fixture
@@ -96,9 +96,10 @@ def test_stream_opens_before_snapshot_notification():
     reader.run()
     assert inbox.get_nowait().event is None
     assert inbox.get_nowait().event == {"Action": "start"}
-    assert FILTER["label"] == "d2n.enabled"
-    assert "health_status" in FILTER["event"]
-    assert "update" in FILTER["event"]
+    filters = docker.monitor_changes.call_args.kwargs["filters"]
+    assert set(filters["type"]) == {"container", "network"}
+    assert "label" not in filters
+    assert {"health_status", "update", "connect", "disconnect"} <= set(filters["event"])
 
 
 def test_real_thread_can_stop_a_blocking_stream():

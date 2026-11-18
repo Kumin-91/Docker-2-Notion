@@ -17,7 +17,7 @@ from notion_client.errors import (
 from src.models import DockerContainerInfo
 from src.logger import notion_logger
 from src.status_schema import status_options, status_schema_matches, status_schema_update
-from src.storage import normalize_database_id, read_json, write_json
+from src.storage import fsync_directory, normalize_database_id, read_json, write_json
 
 T = TypeVar("T")
 
@@ -112,13 +112,16 @@ class NotionClient:
                 write_json(backup_path, {
                     "version": 1, "database_id": database_id,
                     "status_property": current, "captured_at": time.time(),
-                })
+                }, durable=True)
             elif (
                 not isinstance(backup, dict) or backup.get("version") != 1
                 or backup.get("database_id") != database_id
                 or "status_property" not in backup
             ):
                 raise ValueError(f"Invalid Status backup: {backup_path}")
+            else:
+                # A prior replace may have succeeded before the directory sync failed.
+                fsync_directory(Path(backup_path).parent)
             self._request_with_retry(
                 f"update_status_schema({database_id})",
                 lambda: self.client.databases.update(database_id=database_id, properties=properties),
@@ -198,8 +201,8 @@ class NotionClient:
         """Notion 페이지 업데이트.
 
         - 성공            -> True
-        - 페이지 없음(404) -> PageNotFoundError 발생 (캐시 무효화 후 재생성)
-        - 그 외 오류       -> 재시도 후 예외 전파 (호출측에서 skip)
+        - object_not_found -> PageNotFoundError 발생 (호출 측에서 캐시 무효화 후 검색)
+        - 그 외 오류       -> 일시 오류는 내부 재시도하며, 전파된 예외는 호출 측에서 재시도 또는 차단 판단
         """
         notion_logger.debug(f"Updating page {page_id} for container: {container.name}")
         data = self._convert_property(container)

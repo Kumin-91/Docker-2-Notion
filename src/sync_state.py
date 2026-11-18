@@ -82,4 +82,4 @@ class SyncState:
             "version": 1,
             "jobs": {key: asdict(job) for key, job in self.jobs.items()},
             "managed": {key: asdict(entry) for key, entry in self.managed.items()},
-        })
+        }, durable=True)

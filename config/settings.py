@@ -1,5 +1,4 @@
 import os
-from typing import Any
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 import yaml
@@ -69,37 +68,50 @@ class Settings:
 
     def _load_yaml_config(self, yaml_file: str) -> None:
         """.yaml 파일에서 설정을 로드."""
-        config: dict[str, Any] = {}
-        if os.path.exists(yaml_file):
+        try:
             with open(yaml_file, "r", encoding="utf-8") as file:
-                config = yaml.safe_load(file) or {}
-        else:
-            config_logger.error(f"YAML configuration file '{os.path.abspath(yaml_file)}' not found")
-            raise FileNotFoundError(f"YAML configuration file '{os.path.abspath(yaml_file)}' not found")
+                config = yaml.safe_load(file)
+        except FileNotFoundError:
+            message = f"YAML configuration file '{os.path.abspath(yaml_file)}' not found"
+            config_logger.error(message)
+            raise FileNotFoundError(message) from None
+        except yaml.YAMLError as exc:
+            mark = getattr(exc, "problem_mark", None)
+            location = f" at line {mark.line + 1}, column {mark.column + 1}" if mark is not None else ""
+            raise ValueError(f"Invalid YAML configuration{location}") from None
 
-        targets_config = config.get("targets", {})
-        if not targets_config:
-            config_logger.error("No targets configuration found in YAML file")
-            raise ValueError("No targets configuration found in YAML file")
+        if not isinstance(config, dict):
+            raise ValueError("YAML root must be a mapping")
+        targets = config.get("targets")
+        if not isinstance(targets, dict):
+            raise ValueError("targets must be a mapping")
+        databases = targets.get("databases")
+        if not isinstance(databases, list) or not databases:
+            raise ValueError("targets.databases must be a non-empty list")
 
-        self.DB_IDS = {
-            item["name"]: item["database_id"]
-            for item in targets_config.get("databases", [])
-        }
-        if not self.DB_IDS:
-            config_logger.error("No database mappings found in configuration")
-            raise ValueError("No database mappings found in configuration")
+        db_ids: dict[str, str] = {}
+        for index, item in enumerate(databases):
+            path = f"targets.databases[{index}]"
+            if not isinstance(item, dict):
+                raise ValueError(f"{path} must be a mapping")
+            name, database_id = item.get("name"), item.get("database_id")
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError(f"{path}.name must be a non-blank string")
+            if not isinstance(database_id, str) or not database_id.strip():
+                raise ValueError(f"{path}.database_id must be a non-blank string")
+            if name in db_ids:
+                raise ValueError(f"{path}.name duplicates an earlier database name")
+            db_ids[name] = database_id
 
-        default_db_name = targets_config.get("default", "")
-        if default_db_name == "":
-            config_logger.error("No default target specified in configuration")
-            raise ValueError("No default target specified in configuration")
+        default_db_name = targets.get("default")
+        if not isinstance(default_db_name, str) or not default_db_name.strip():
+            raise ValueError("targets.default must be a non-blank string")
+        if default_db_name not in db_ids:
+            raise ValueError("targets.default must refer to a name in targets.databases")
 
+        self.DB_IDS = db_ids
         self.DEFAULT_DB_NAME = default_db_name
-        self.DEFAULT_DB_ID = self.DB_IDS.get(default_db_name, "")
-        if self.DEFAULT_DB_ID == "":
-            config_logger.error(f"Default target '{default_db_name}' ID not found in configuration")
-            raise ValueError(f"Default target '{default_db_name}' ID not found in configuration")
+        self.DEFAULT_DB_ID = db_ids[default_db_name]
 
     def resolve_db_id(self, name: str | None) -> str:
         """`d2n.database` 라벨(데이터베이스 이름)을 실제 Notion DB ID로 해석.

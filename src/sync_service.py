@@ -74,11 +74,20 @@ class SyncService:
         self.state.save()
 
     def submit_event(self, event: dict[str, Any]) -> None:
-        attrs = event.get("Actor", {}).get("Attributes", {})
+        actor = event.get("Actor")
+        if not isinstance(actor, dict) or not isinstance(attrs := actor.get("Attributes"), dict):
+            return
+        event_type = event.get("Type", "container")
+        if event_type == "network":
+            if event.get("Action") in ("connect", "disconnect"):
+                self._submit_network_change(attrs.get("container"))
+            return
+        if event_type != "container":
+            return
         if str(attrs.get("d2n.enabled", "false")).upper() != "TRUE":
             return
         name = str(event.get("name") or attrs.get("name", "")).lstrip("/")
-        container_id = str(event.get("id") or event.get("Actor", {}).get("ID") or "")
+        container_id = str(event.get("id") or actor.get("ID") or "")
         if not name or not container_id:
             return
         removed = event.get("Action") == "destroy"
@@ -92,8 +101,27 @@ class SyncService:
             d2n_enabled=True, d2n_database=str(attrs.get("d2n.database", "")),
         ))
 
+    def _submit_network_change(self, container_id: Any) -> None:
+        # A network event's actor ID identifies the network, not its container.
+        if not isinstance(container_id, str) or not container_id.strip():
+            return
+        try:
+            container = self.docker.get_container_info(container_id)
+        except (DockerException, RequestException, ConnectionError) as exc:
+            if self.snapshot_due == float("inf"):
+                self._defer_snapshot(exc)
+            return
+        if container is not None:
+            self.submit(container)
+
     def request_snapshot(self) -> None:
         self.snapshot_due = self.clock()
+
+    def _defer_snapshot(self, exc: Exception) -> None:
+        delay = min(INITIAL_RETRY * 2 ** min(self.snapshot_attempts, 4), MAX_RETRY)
+        self.snapshot_attempts += 1
+        self.snapshot_due = self.clock() + delay
+        main_logger.warning(f"Docker snapshot deferred {delay:.1f}s: {exc}")
 
     def reconcile(self) -> None:
         # snapshot() raises on partial/failed reads: never infer removals then.
@@ -248,10 +276,7 @@ class SyncService:
             except InterruptedError:
                 return
             except (DockerException, RequestException, ConnectionError) as exc:
-                delay = min(INITIAL_RETRY * 2 ** min(self.snapshot_attempts, 4), MAX_RETRY)
-                self.snapshot_attempts += 1
-                self.snapshot_due = self.clock() + delay
-                main_logger.warning(f"Docker snapshot deferred {delay:.1f}s: {exc}")
+                self._defer_snapshot(exc)
         # A full listing can take time; cooldown and job deadlines must use the
         # time after the listing finishes, rather than its start time.
         now = self.clock()

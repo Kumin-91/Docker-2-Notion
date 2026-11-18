@@ -50,7 +50,7 @@ fi
 
 echo "==> 4/4 새 컨테이너 실행"
 # shellcheck disable=SC2086  # NOTION_ENV/NETWORK_ARG 는 빈 값일 때 인자에서 빠지도록 의도적으로 분할
-docker run -d \
+container_id=$(docker run -d \
   --name "${PROJECT_NAME}" \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   -v "${HOST_DIR}/config:/app/config" \
@@ -65,7 +65,8 @@ docker run -d \
   --label "d2n.database=${D2N_DATABASE}" \
   --label "com.centurylinklabs.watchtower.enable=false" \
   --restart unless-stopped \
-  "${PROJECT_NAME}:latest"
+  "${PROJECT_NAME}:latest")
+sh ./wait-for-health.sh "$container_id"
 
 echo "==> dangling 이미지 정리"
 docker image prune -f >/dev/null 2>&1 || true

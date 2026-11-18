@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y gcc build-essential libffi-dev && rm -r
 # 패키지 설치
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install pyinstaller
+RUN pip install pyinstaller==6.22.3 && pyinstaller --version
 
 # 소스 코드 전체 복사 및 빌드
 COPY . .

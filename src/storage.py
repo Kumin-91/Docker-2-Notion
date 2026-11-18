@@ -28,9 +28,33 @@ def read_json(path: str) -> Any:
         return None
 
 
-def write_json(path: str, value: Any) -> None:
+def fsync_directory(directory: Path) -> None:
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _mkdir_durable(directory: Path) -> None:
+    try:
+        directory.mkdir()
+    except FileNotFoundError:
+        _mkdir_durable(directory.parent)
+        _mkdir_durable(directory)
+    except FileExistsError:
+        if not directory.is_dir():
+            raise
+    else:
+        fsync_directory(directory.parent)
+
+
+def write_json(path: str, value: Any, *, durable: bool = False) -> None:
     destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    if durable:
+        _mkdir_durable(destination.parent)
+    else:
+        destination.parent.mkdir(parents=True, exist_ok=True)
     temporary: str | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -42,6 +66,8 @@ def write_json(path: str, value: Any) -> None:
             os.fsync(file.fileno())
         os.replace(temporary, destination)
         temporary = None
+        if durable:
+            fsync_directory(destination.parent)
     finally:
         if temporary is not None:
             os.unlink(temporary)

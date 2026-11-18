@@ -3,29 +3,18 @@
 import copy
 import hashlib
 import json
-from threading import Event
-from unittest.mock import MagicMock
 
 import httpx
 import pytest
-from notion_client import Client
-from notion_client.errors import HTTPResponseError
 
-from src.notion_client import NotionClient
 from src.status import STATUS_OPTIONS
 from src.status_schema import status_options, status_schema_matches
-from src.storage import identity
-from src.sync_service import SchemaJob, SyncService
 
 
 @pytest.fixture
-def schema_client(tmp_path, monkeypatch, notion_status_schema):
+def schema_client(tmp_path, monkeypatch, notion_status_schema, mock_notion):
     monkeypatch.chdir(tmp_path)
-    client = NotionClient.__new__(NotionClient)
-    client.client = MagicMock()
-    client.stop_event = Event()
-    client.retry_not_before = 0.0
-    client._prepared_status_databases = set()
+    client = mock_notion
     monkeypatch.setattr(client.stop_event, "wait", lambda delay: False)
     client.client.databases.retrieve.return_value = copy.deepcopy(notion_status_schema)
     return client
@@ -160,13 +149,17 @@ def test_invalid_backup_prevents_mutation(schema_client, notion_status_schema, t
     assert file.read_text() == data
 
 
-def test_backup_storage_failure_prevents_mutation(schema_client, notion_status_schema, monkeypatch):
+def test_backup_storage_failure_prevents_mutation(schema_client, notion_status_schema, monkeypatch, tmp_path):
     schema_client.client.databases.retrieve.return_value = old_schema(notion_status_schema)
-    def fail(*args):
-        raise OSError("disk full")
-    monkeypatch.setattr("src.notion_client.write_json", fail)
-    with pytest.raises(OSError, match="disk full"):
-        schema_client.ensure_status_schema("db-a")
+    (tmp_path / "data").mkdir()
+    def fail(directory):
+        raise OSError("directory sync failed")
+    monkeypatch.setattr("src.storage.fsync_directory", fail)
+    monkeypatch.setattr("src.notion_client.fsync_directory", fail)
+    for _ in range(2):
+        with pytest.raises(OSError, match="directory sync failed"):
+            schema_client.ensure_status_schema("db-a")
+        assert backup_file(tmp_path).exists()
     schema_client.client.databases.update.assert_not_called()
 
 
@@ -191,10 +184,26 @@ def test_ignored_schema_update_is_not_marked_ready(schema_client, notion_status_
     assert not schema_client._prepared_status_databases
 
 
-def test_real_pinned_sdk_forwards_group_and_color_and_preserves_other_properties(tmp_path, monkeypatch, notion_status_schema):
+def test_real_pinned_sdk_forwards_group_and_color_and_preserves_other_properties(tmp_path, monkeypatch, notion_status_schema, notion_transport):
     monkeypatch.chdir(tmp_path)
     before = old_schema(notion_status_schema)
     before["properties"]["Name"] = {"type": "title", "title": {}}
+    names_by_id = {
+        option["id"]: option["name"]
+        for option in before["properties"]["Status"]["status"]["options"]
+    }
+    expected = {
+        "created": ("red", "To-do"),
+        "dead": ("red", "To-do"),
+        "starting": ("blue", "In progress"),
+        "restarting": ("blue", "In progress"),
+        "paused": ("blue", "In progress"),
+        "unhealthy": ("blue", "In progress"),
+        "running": ("green", "Complete"),
+        "healthy": ("green", "Complete"),
+        "exited": ("gray", "Complete"),
+        "removed": ("gray", "Complete"),
+    }
     current = [before]
     calls = []
     def handler(request):
@@ -207,111 +216,13 @@ def test_real_pinned_sdk_forwards_group_and_color_and_preserves_other_properties
         assert backup_file(tmp_path).exists()
         body = json.loads(request.content)
         assert set(body["properties"]) == {"Status"}
-        sent = {option["id"]: option for option in body["properties"]["Status"]["status"]["options"]}
-        for option in STATUS_OPTIONS:
-            assert sent[option["name"]]["color"] == option["color"]
-            assert sent[option["name"]]["group"] == option["group"]
-        assert "legacy" not in sent
+        sent = body["properties"]["Status"]["status"]["options"]
+        assert len(sent) == len(expected)
+        assert {names_by_id[option["id"]]: (option["color"], option["group"]) for option in sent} == expected
         current[0] = copy.deepcopy(notion_status_schema)
         current[0]["properties"]["Name"] = before["properties"]["Name"]
         return httpx.Response(200, json=current[0])
-    client = NotionClient("fake-token")
-    client.client.close()
-    client.client = Client(client=httpx.Client(transport=httpx.MockTransport(handler)), auth="fake-token")
-    try:
-        client.ensure_status_schema("db-a")
-        assert calls == [("GET", "/v1/databases/db-a"), ("PATCH", "/v1/databases/db-a"), ("GET", "/v1/databases/db-a")]
-        assert status_schema_matches(status_options(current[0]["properties"]["Status"]))
-    finally:
-        client.close()
-
-
-def test_startup_configures_each_unique_db_even_without_containers(harness):
-    h = harness
-    h.settings.DB_IDS = {"A": "db-a", "B": "db-b", "Alias": "db-a"}
-    service = SyncService(h.docker, h.notion, h.cache, h.settings, h.state, h.stop, lambda: h.now[0])
-    service.snapshot_due = float("inf")
-    service.tick()
-    service.tick()
-    assert h.notion.ensure_status_schema.call_count == 2
-    assert not service.schema_jobs
-    h.notion.update_page.assert_not_called()
-
-
-def test_schema_failure_defers_pages_without_busy_retry_and_other_db_can_proceed(harness):
-    h = harness
-    h.service.schema_jobs = {"db-a": SchemaJob()}
-    h.service.submit(h.container)
-    def ensure(db):
-        if db == "db-a":
-            raise HTTPResponseError(httpx.Response(503, text="temporary"))
-    h.notion.ensure_status_schema.side_effect = ensure
-    h.service.tick()
-    h.service.tick()
-    assert h.service.schema_jobs["db-a"].due == 1030
-    assert h.notion.ensure_status_schema.call_count == 1
-    assert h.service.wait_seconds() == 1.0
-    h.notion.find_page_id.assert_not_called()
-    h.notion.create_page.assert_not_called()
-    other = h.replace(h.container, name="other", d2n_database="B")
-    h.docker.get_container_info.return_value = other
-    h.service.submit(other)
-    h.service.tick()
-    h.notion.update_page.assert_called_once()
-    h.now[0] = 1030
-    h.notion.ensure_status_schema.side_effect = None
-    h.docker.get_container_info.return_value = h.container
-    h.service.tick()
-    h.service.tick()
-    assert identity("db-a", "web") not in h.state.jobs
-
-
-def test_permanent_schema_error_blocks_pages_until_restart(harness):
-    h = harness
-    h.settings.DB_IDS = {"A": "db-a"}
-    h.service.schema_jobs = {"db-a": SchemaJob()}
-    h.service.submit(h.container)
-    h.notion.ensure_status_schema.side_effect = ValueError("bad schema")
-    h.service.tick()
-    h.now[0] = 2000
-    h.service.tick()
-    assert h.service.schema_jobs["db-a"].blocked
-    assert h.notion.ensure_status_schema.call_count == 1
-    h.notion.create_page.assert_not_called()
-    h.notion.update_page.assert_not_called()
-    assert h.service.wait_seconds() == 1.0
-    h.notion.ensure_status_schema.side_effect = None
-    service = SyncService(h.docker, h.notion, h.cache, h.settings, h.state, h.stop, lambda: h.now[0])
-    service.snapshot_due = float("inf")
-    service.tick()
-    service.tick()
-    assert not h.state.jobs
-
-
-def test_schema_429_honors_worker_cooldown(harness):
-    h = harness
-    h.service.schema_jobs = {"db-a": SchemaJob()}
-    def limit(db):
-        h.notion.retry_not_before = 1600
-        raise HTTPResponseError(httpx.Response(429, headers={"Retry-After": "600"}, text="limited"))
-    h.notion.ensure_status_schema.side_effect = limit
-    h.service.tick()
-    assert h.service.schema_jobs["db-a"].due == 1600
-    h.now[0] = 1500
-    h.service.tick()
-    assert h.notion.ensure_status_schema.call_count == 1
-
-
-def test_storage_error_during_schema_initialization_keeps_uncertain_creation_marker(harness):
-    h = harness
-    h.service.schema_jobs = {"db-a": SchemaJob()}
-    h.service.submit(h.container)
-    job = h.state.jobs[identity("db-a", "web")]
-    job.uncertain = True
-    h.state.save()
-    h.notion.ensure_status_schema.side_effect = OSError("backup disk full")
-    with pytest.raises(OSError):
-        h.service.tick()
-    from src.sync_state import SyncState
-    assert SyncState(h.state.path).jobs[identity("db-a", "web")].uncertain
-    h.notion.create_page.assert_not_called()
+    client = notion_transport(handler)
+    client.ensure_status_schema("db-a")
+    assert calls == [("GET", "/v1/databases/db-a"), ("PATCH", "/v1/databases/db-a"), ("GET", "/v1/databases/db-a")]
+    assert status_schema_matches(status_options(current[0]["properties"]["Status"]))

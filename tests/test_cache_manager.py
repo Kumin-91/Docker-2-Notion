@@ -1,7 +1,6 @@
 import time
 import json
 import pytest
-from src.storage import identity
 from src.cache_manager import CacheManager
 
 
@@ -9,37 +8,12 @@ def _cache(tmp_path, ttl=300):
     return CacheManager(cache_file=str(tmp_path / "cache.json"), ttl_seconds=ttl)
 
 
-def test_set_and_get(tmp_path):
+def test_cache_round_trip_survives_restart(tmp_path):
     cm = _cache(tmp_path)
+    assert cm.get_page_id("db-a", "web") is None
     cm.set_page_id("db-a", "web", "page-1")
     assert cm.get_page_id("db-a", "web") == "page-1"
-
-
-def test_get_missing_returns_none(tmp_path):
-    cm = _cache(tmp_path)
-    assert cm.get_page_id("db-a", "nope") is None
-
-
-def test_remove(tmp_path):
-    cm = _cache(tmp_path)
-    cm.set_page_id("db-a", "web", "page-1")
-    cm.remove_page_id("db-a", "web")
-    assert cm.get_page_id("db-a", "web") is None
-
-
-def test_ttl_expiry(tmp_path):
-    cm = _cache(tmp_path)
-    cm.set_page_id("db-a", "web", "page-1")
-    # 타임스탬프를 과거로 강제하여 만료 유도
-    cm.cache_data[identity("db-a", "web")]["timestamp"] = time.time() - 10_000
-    assert cm.get_page_id("db-a", "web") is None
-
-
-def test_persistence_across_instances(tmp_path):
-    cache_file = str(tmp_path / "cache.json")
-    CacheManager(cache_file=cache_file).set_page_id("db-a", "web", "page-1")
-    reopened = CacheManager(cache_file=cache_file)
-    assert reopened.get_page_id("db-a", "web") == "page-1"
+    assert _cache(tmp_path).get_page_id("db-a", "web") == "page-1"
 
 
 def test_database_isolation_and_targeted_removal(tmp_path):
@@ -49,16 +23,24 @@ def test_database_isolation_and_targeted_removal(tmp_path):
     assert cm.get_page_id("db-a", "web") == "page-a"
     assert cm.get_page_id("db-b", "web") == "page-b"
     cm.remove_page_id("db-a", "web")
-    assert cm.get_page_id("db-b", "web") == "page-b"
-
-
-def test_expiry_isolated_to_database(tmp_path):
-    cm = _cache(tmp_path)
-    cm.set_page_id("db-a", "web", "page-a")
-    cm.set_page_id("db-b", "web", "page-b")
-    cm.cache_data[identity("db-a", "web")]["timestamp"] = 0
     assert cm.get_page_id("db-a", "web") is None
     assert cm.get_page_id("db-b", "web") == "page-b"
+    assert _cache(tmp_path).get_page_id("db-a", "web") is None
+
+
+def test_ttl_boundary_expires_only_the_older_database_entry(tmp_path, monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr("src.cache_manager.time.time", lambda: now[0])
+    cm = _cache(tmp_path)
+    cm.set_page_id("db-a", "web", "page-a")
+    now[0] += 1
+    cm.set_page_id("db-b", "web", "page-b")
+    now[0] = 1300.0
+    assert cm.get_page_id("db-a", "web") == "page-a"
+    now[0] += 1
+    assert cm.get_page_id("db-a", "web") is None
+    assert cm.get_page_id("db-b", "web") == "page-b"
+    assert _cache(tmp_path).get_page_id("db-a", "web") is None
 
 
 def test_equivalent_uuid_ids_share_cache(tmp_path):

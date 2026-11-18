@@ -132,52 +132,41 @@ def test_reporter_throttles_disk_writes_and_removes_ephemeral_files(health):
     assert health.probe(lambda url: True) == 1
 
 
-def test_idle_event_loop_advances_heartbeat(tmp_path):
+@pytest.mark.parametrize("with_event", [False, True], ids=["idle", "event"])
+def test_event_loop_advances_heartbeat_after_successful_tick(health, with_event):
+    from src.event_reader import StreamMessage
+
     stop = Event()
-    now = [1000.0]
-    health = HealthReporter("unix:///test/docker.sock", tmp_path / "health.json", lambda: now[0])
+    inbox = Queue()
+    if with_event:
+        inbox.put(StreamMessage({"Action": "start"}))
     service = MagicMock()
     service.wait_seconds.return_value = 0
+
     def tick():
-        now[0] += 5
+        health.now[0] += 5
         stop.set()
+
     service.tick.side_effect = tick
-    run_event_loop(service, Queue(), stop, health)
+    run_event_loop(service, inbox, stop, health.reporter)
+    if with_event:
+        service.submit_event.assert_called_once_with({"Action": "start"})
+    else:
+        service.submit_event.assert_not_called()
     assert read_json(str(health.path))["loop_at"] == 1005.0
 
 
-def test_failed_tick_does_not_advance_heartbeat(tmp_path):
-    now = [1000.0]
-    health = HealthReporter("unix:///test/docker.sock", tmp_path / "health.json", lambda: now[0])
+def test_failed_tick_does_not_advance_heartbeat(health):
     service = MagicMock()
     service.wait_seconds.return_value = 0
     def fail():
-        now[0] += 180
+        health.now[0] += 180
         raise RuntimeError("worker failed")
     service.tick.side_effect = fail
     with pytest.raises(RuntimeError, match="worker failed"):
-        run_event_loop(service, Queue(), Event(), health)
+        run_event_loop(service, Queue(), Event(), health.reporter)
     assert read_json(str(health.path))["loop_at"] == 1000.0
-    assert check_health(health.path, lambda: now[0], lambda url: True) == 1
-
-
-def test_event_processing_advances_heartbeat(tmp_path):
-    from src.event_reader import StreamMessage
-
-    now = [1000.0]
-    stop = Event()
-    health = HealthReporter("unix:///test/docker.sock", tmp_path / "health.json", lambda: now[0])
-    inbox = Queue()
-    inbox.put(StreamMessage({"Action": "start"}))
-    service = MagicMock()
-    service.wait_seconds.return_value = 0
-    def tick():
-        now[0] += 5
-        stop.set()
-    service.tick.side_effect = tick
-    run_event_loop(service, inbox, stop, health)
-    service.submit_event.assert_called_once_with({"Action": "start"})
-    assert read_json(str(health.path))["loop_at"] == 1005.0
+    assert health.probe(lambda url: True) == 1
 
 
 @pytest.mark.parametrize("ping_status, expected", [(200, True), (503, False)])

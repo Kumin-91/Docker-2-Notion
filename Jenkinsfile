@@ -74,7 +74,7 @@ pipeline {
         stage('Run new docker container') {
             steps {
                 sh '''
-                    docker run -d \
+                    container_id=$(docker run -d \
                         --name ${PROJECT_NAME} \
                         -v /var/run/docker.sock:/var/run/docker.sock:ro \
                         -v ${HOST_DIR}/config:/app/config \
@@ -89,7 +89,8 @@ pipeline {
                         --label "com.centurylinklabs.watchtower.enable=false" \
                         --restart unless-stopped \
                         --network ${NETWORK} \
-                        ${PROJECT_NAME}:latest
+                        ${PROJECT_NAME}:latest)
+                    sh ./wait-for-health.sh "$container_id"
                 '''
             }
         }

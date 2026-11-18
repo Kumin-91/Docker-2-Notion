@@ -1,9 +1,10 @@
-from dataclasses import replace
 from threading import Event
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
+from notion_client import Client
 
 from src.cache_manager import CacheManager
 from src.docker_client import DockerClient, DockerSnapshot
@@ -12,6 +13,32 @@ from src.notion_client import NotionClient
 from src.sync_service import SyncService
 from src.sync_state import SyncState
 from src.status import STATUS_OPTIONS
+
+
+@pytest.fixture
+def mock_notion(monkeypatch):
+    """Keep application initialization real; mock only the external SDK."""
+    sdk = MagicMock()
+    monkeypatch.setattr("src.notion_client.Client", lambda **kwargs: sdk)
+    return NotionClient("test-token")
+
+
+@pytest.fixture
+def notion_transport(monkeypatch):
+    """Use the pinned SDK with an in-memory HTTP transport and close every client."""
+    clients = []
+
+    def create(handler, stop_event=None):
+        sdk = Client(client=httpx.Client(transport=httpx.MockTransport(handler)), auth="test-token")
+        with monkeypatch.context() as patch:
+            patch.setattr("src.notion_client.Client", lambda **kwargs: sdk)
+            client = NotionClient("test-token", stop_event)
+        clients.append(client)
+        return client
+
+    yield create
+    for client in clients:
+        client.close()
 
 
 @pytest.fixture
@@ -59,5 +86,5 @@ def harness(tmp_path, container):
     service.snapshot_due = float("inf")
     return SimpleNamespace(
         service=service, docker=docker, notion=notion, cache=cache, state=state,
-        settings=settings, stop=stop, now=now, container=container, replace=replace,
+        settings=settings, stop=stop, now=now, container=container,
     )

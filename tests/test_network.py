@@ -24,19 +24,6 @@ def test_not_host_network():
 
 # --- parse_ip --------------------------------------------------------------
 
-def test_parse_ip_multiple_networks_ip_first_sorted_ascending():
-    attrs = {
-        "NetworkSettings": {
-            "Networks": {
-                "bridge": {"IPAddress": "172.17.0.2"},
-                "app-net": {"IPAddress": "10.5.0.3"},
-            }
-        }
-    }
-    # `ip: name` 형식, IP 오름차순
-    assert parse_ip(attrs) == "10.5.0.3: app-net\n172.17.0.2: bridge"
-
-
 def test_parse_ip_numeric_sort_not_lexicographic():
     attrs = {
         "NetworkSettings": {
@@ -84,44 +71,19 @@ def test_parse_ip_skips_networks_without_ip():
 
 # --- parse_ports -----------------------------------------------------------
 
-def test_parse_ports_all_interfaces_omits_ip_and_skips_ipv6():
+def test_parse_ports_host_mode_is_blank():
+    attrs = {"HostConfig": {"NetworkMode": "host"}, "NetworkSettings": {"Ports": {}}}
+    assert parse_ports(attrs) == ""
+
+
+def test_parse_ports_formats_bindings_and_exposed_ports_in_sorted_order():
     attrs = {
         "NetworkSettings": {
             "Ports": {
                 "80/tcp": [
                     {"HostIp": "0.0.0.0", "HostPort": "8080"},
                     {"HostIp": "::", "HostPort": "8080"},
-                ]
-            }
-        }
-    }
-    assert parse_ports(attrs) == "80 → 8080/tcp"
-
-
-def test_parse_ports_specific_ip_is_shown():
-    attrs = {
-        "NetworkSettings": {
-            "Ports": {"5432/tcp": [{"HostIp": "127.0.0.1", "HostPort": "5432"}]}
-        }
-    }
-    assert parse_ports(attrs) == "5432 → 127.0.0.1:5432/tcp"
-
-
-def test_parse_ports_exposed_only():
-    attrs = {"NetworkSettings": {"Ports": {"9000/tcp": None}}}
-    assert parse_ports(attrs) == "9000/tcp"
-
-
-def test_parse_ports_host_mode_is_blank():
-    attrs = {"HostConfig": {"NetworkMode": "host"}, "NetworkSettings": {"Ports": {}}}
-    assert parse_ports(attrs) == ""
-
-
-def test_parse_ports_multiple_sorted():
-    attrs = {
-        "NetworkSettings": {
-            "Ports": {
-                "80/tcp": [{"HostIp": "0.0.0.0", "HostPort": "8080"}],
+                ],
                 "5432/tcp": [{"HostIp": "127.0.0.1", "HostPort": "5432"}],
                 "9000/tcp": None,
             }

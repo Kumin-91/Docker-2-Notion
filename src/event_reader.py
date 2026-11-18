@@ -9,9 +9,11 @@ from src.docker_client import DockerClient
 from src.logger import docker_logger
 
 FILTER = {
-    "type": "container",
-    "event": ["create", "start", "stop", "die", "destroy", "restart", "pause", "unpause", "health_status", "update"],
-    "label": "d2n.enabled",
+    "type": ["container", "network"],
+    "event": [
+        "create", "start", "stop", "die", "destroy", "restart", "pause", "unpause",
+        "health_status", "update", "connect", "disconnect",
+    ],
 }
 
 

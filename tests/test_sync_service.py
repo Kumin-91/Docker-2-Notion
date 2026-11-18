@@ -254,6 +254,82 @@ def test_docker_connection_failure_is_not_container_removal(harness):
     assert h.state.jobs[identity("db-a", "web")].due == 1030
 
 
+def network_event(action, container_id):
+    return {
+        "Type": "network", "Action": action,
+        "Actor": {"ID": "network-id", "Attributes": {"container": container_id, "name": "bridge"}},
+    }
+
+
+@pytest.mark.parametrize("action, ip", [
+    ("connect", "10.0.0.2: bridge\n10.1.0.2: extra"),
+    ("disconnect", "10.0.0.2: bridge"),
+])
+def test_network_change_updates_existing_page_with_latest_ips(harness, action, ip):
+    h = harness
+    current = replace(h.container, ip=ip)
+    h.docker.get_container_info.return_value = current
+
+    h.service.submit_event(network_event(action, current.container_id))
+    h.docker.get_container_info.assert_called_once_with(current.container_id)
+    h.service.tick()
+
+    h.docker.snapshot.assert_not_called()
+    h.notion.update_page.assert_called_once_with("page-a", current)
+
+
+@pytest.mark.parametrize("action, container_id", [
+    ("create", "id-old"), ("destroy", "id-old"), ("connect", None),
+    ("connect", 123), ("disconnect", " "),
+])
+def test_unrelated_or_malformed_network_event_does_not_inspect(harness, action, container_id):
+    harness.service.submit_event(network_event(action, container_id))
+    harness.docker.get_container_info.assert_not_called()
+    assert not harness.state.jobs
+
+
+@pytest.mark.parametrize("exists", [True, False])
+def test_network_event_ignores_disabled_or_missing_container(harness, exists):
+    h = harness
+    h.docker.get_container_info.return_value = replace(h.container, d2n_enabled=False) if exists else None
+    h.service.submit_event(network_event("disconnect", h.container.container_id))
+    h.service.tick()
+
+    h.docker.snapshot.assert_not_called()
+    h.notion.update_page.assert_not_called()
+    assert not h.state.jobs
+
+
+def test_failed_network_inspect_coalesces_into_snapshot_backoff(harness):
+    h = harness
+    event = network_event("connect", h.container.container_id)
+    current = replace(h.container, ip="10.1.0.2: extra")
+    outage = DockerConnectionError("offline")
+    h.docker.get_container_info.side_effect = outage
+    h.docker.snapshot.side_effect = [outage, DockerSnapshot({current.container_id}, [current])]
+
+    h.service.submit_event(event)
+    h.now[0] = 1010
+    h.service.submit_event(event)
+    h.service.tick()
+    h.docker.snapshot.assert_not_called()
+    h.notion.update_page.assert_not_called()
+
+    h.now[0] = 1030
+    h.service.tick()
+    h.now[0] = 1089
+    h.service.submit_event(event)
+    h.service.tick()
+    assert h.docker.snapshot.call_count == 1
+
+    h.docker.get_container_info.side_effect = None
+    h.docker.get_container_info.return_value = current
+    h.now[0] = 1090
+    h.service.tick()
+    assert h.docker.snapshot.call_count == 2
+    h.notion.update_page.assert_called_once_with("page-a", current)
+
+
 def test_pending_work_recovers_after_restart(harness):
     h = harness
     h.notion.find_page_id.side_effect = error()
@@ -425,10 +501,13 @@ def test_storage_failure_before_creation_fails_closed(harness, monkeypatch):
     h = harness
     h.notion.find_page_id.return_value = None
     h.service.submit(h.container)
-    monkeypatch.setattr(h.state, "save", lambda: (_ for _ in ()).throw(OSError("disk full")))
-    with pytest.raises(OSError):
+    def fail(directory):
+        raise OSError("directory sync failed")
+    monkeypatch.setattr("src.storage.fsync_directory", fail)
+    with pytest.raises(OSError, match="directory sync failed"):
         h.service.tick()
     h.notion.create_page.assert_not_called()
+    assert SyncState(h.state.path).jobs[identity("db-a", "web")].uncertain
 
 
 def test_deleted_page_of_absent_container_is_not_recreated(harness):
