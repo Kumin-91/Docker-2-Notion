@@ -77,16 +77,17 @@
 
 ### 2. 호스트 설정 파일 준비
 
-* 보안을 위해 `.env` 파일 대신 런타임 환경 변수를 사용합니다. 설정 파일과 로그는 호스트의 홈 디렉토리에서 관리합니다.
+* Jenkinsfile의 기본 호스트 경로는 `/docker/d2n`입니다. Docker 호스트에 설정·로그·데이터 디렉토리를 준비합니다.
 
 * `config/` 디렉토리에 있는 `config.yaml.example` 파일을 복사하여 실제 설정 파일을 작성하면 더 쉽습니다.
 
-  ```Bash
-  # 1. 홈 디렉토리에 설정 폴더 생성
-  mkdir -p ~/d2n/config ~/d2n/logs ~/d2n/data
+  ```sh
+  mkdir -p /docker/d2n/config /docker/d2n/logs /docker/d2n/data
+  ```
 
-  # 2. Database 목록 설정 (config.yaml 작성)
-  # ~/d2n/config/config.yaml 경로에 아래 내용 작성
+  `/docker/d2n/config/config.yaml`에 Notion 데이터베이스를 설정합니다.
+
+  ```yaml
   targets:
     default: "example"
     databases:
@@ -98,40 +99,20 @@
         database_id: "SU_DATABASE_ID_HERE"
   ```
 
-### 3. 프로그램 빌드 및 실행
+### 3. Jenkins로 배포
 
-* 민감한 API 키는 실행 시점에 `-e` 옵션으로 안전하게 주입합니다.
+* Jenkins에 Notion API 토큰을 Secret text 자격 증명 `D2N_NOTION_API_KEY`로 등록합니다. Discord 알림에는 `DISCORD_METATRON` 자격 증명을 사용합니다.
 
-  | 환경 변수 | 설명 | 기본 값 | 사용 예시 |
-  | --- | --- | --- | --- |
-  | `NOTION_API_KEY` | Notion API 토큰 |  | `your_notion_api_key_here` | 
-  | `DOCKER_API_URL` | Docker API URL |  | `tcp://host.docker.internal:2375` |
-  | `LOG_LEVEL` | 로그 레벨 | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
-  | `TZ` | 타임존 설정 | `Asia/Seoul` | `Asia/Japan`, `America/New_York` |
+* Jenkins 작업을 실행하면 `Jenkinsfile`이 테스트, 이미지 빌드, 컨테이너 교체, 헬스체크를 수행합니다. 테스트·빌드·배포에는 Docker 호스트에 구성된 `net_outbound` 네트워크를 사용하며, 이미지 빌드에는 Docker 레거시 빌더가 필요합니다.
 
-* 빌드와 실행에는 외부 접속이 가능한 기존 `net_outbound` 네트워크를 사용합니다. 아래 빌드 명령은 Docker 레거시 빌더가 필요합니다.
+* Jenkins가 컨테이너에 전달하는 환경 변수는 다음과 같습니다.
 
-  ```Bash
-  # 1. 이미지 빌드 (v0.1.0-beta4)
-  DOCKER_BUILDKIT=0 docker build --network net_outbound -t d2n:beta4 .
-
-  # 2. 실행 (환경 변수 주입 및 볼륨 마운트)
-  docker run -d \
-    --name d2n-service \
-    --network net_outbound \
-    --restart unless-stopped \
-    -v /var/run/docker.sock:/var/run/docker.sock:ro \
-    -v ~/d2n/config:/app/config \
-    -v ~/d2n/logs:/app/logs \
-    -v ~/d2n/data:/app/data \
-    -e DOCKER_API_URL="unix:///var/run/docker.sock" \
-    -e NOTION_API_KEY="your_notion_api_key_here" \
-    -e LOG_LEVEL="INFO" \
-    -e TZ="Asia/Seoul" \
-    --label "d2n.enabled=true" \
-    --label "d2n.database=Docker" \
-    d2n:beta4
-  ```
+  | 환경 변수 | 설명 | Jenkins 설정 |
+  | --- | --- | --- |
+  | `NOTION_API_KEY` | Notion API 토큰 | `D2N_NOTION_API_KEY` 자격 증명 |
+  | `DOCKER_API_URL` | Docker API 주소 | `unix:///var/run/docker.sock` |
+  | `LOG_LEVEL` | 로그 레벨 | `INFO` |
+  | `TZ` | 타임존 | `Asia/Seoul` |
 
 ## 🏗 프로젝트 구조
 
@@ -177,7 +158,7 @@
 
 * **운영:** D2N은 같은 Docker 데몬·Notion DB에 하나만 실행하세요. 배포 시 `data` 볼륨을 유지하고 `sync-state.v1.json`을 임의로 삭제하지 마세요.
 
-* **Docker Healthcheck:** 루프 정지나 Docker 연결 실패가 약 3분 지속되면 `unhealthy`입니다. Notion 재시도는 판정에서 제외하며, `unhealthy`만으로 자동 재시작하지 않습니다. Jenkins·수동 스크립트는 새 컨테이너의 `healthy`를 최대 5분 기다립니다.
+* **Docker Healthcheck:** 루프 정지나 Docker 연결 실패가 약 3분 지속되면 `unhealthy`입니다. Notion 재시도는 판정에서 제외하며, `unhealthy`만으로 자동 재시작하지 않습니다. Jenkins는 새 컨테이너의 `healthy`를 기본값 기준 최대 5분 기다립니다.
 
 * **Docker 소켓:** `:ro`로 마운트합니다. 소켓을 통한 Docker API 쓰기 요청까지 차단하는 설정은 아닙니다.
 
