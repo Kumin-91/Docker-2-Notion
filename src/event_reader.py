@@ -12,7 +12,7 @@ FILTER = {
     "type": ["container", "network"],
     "event": [
         "create", "start", "stop", "die", "destroy", "restart", "pause", "unpause",
-        "health_status", "update", "connect", "disconnect",
+        "health_status", "update", "rename", "connect", "disconnect",
     ],
 }
 

@@ -60,6 +60,31 @@ def test_partial_inspect_failure_invalidates_entire_snapshot(docker_client):
         client.snapshot()
 
 
+def test_compose_snapshot_identifies_temporary_name_until_inspect_reports_rename(docker_client):
+    client, sdk = docker_client
+    container = SimpleNamespace(
+        id="replacement-id",
+        name="/0123456789ab_app-web-1",
+        status="created",
+        attrs={"Config": {"Labels": {
+            "d2n.enabled": "true",
+            "com.docker.compose.project": "app",
+            "com.docker.compose.service": "web",
+            "com.docker.compose.container-number": "1",
+            "com.docker.compose.replace": "web-1",
+        }}},
+    )
+    sdk.containers.list.return_value = [container]
+    sdk.containers.get.return_value = container
+    temporary, = client.snapshot().containers
+    assert temporary.compose_temporary and temporary.status == "created"
+
+    container.name = "/app-web-1"
+    final, = client.snapshot().containers
+    assert final.compose_replace_label == "web-1" and not final.compose_temporary
+    assert final.container_id == temporary.container_id
+
+
 def test_disconnect_closes_blocking_stream_and_sdk(docker_client):
     client, sdk = docker_client
     stream = client.monitor_changes()

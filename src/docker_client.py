@@ -20,6 +20,50 @@ from src.logger import docker_logger
 
 # 나노초(>6자리) 소수부를 마이크로초(6자리)로 절삭하기 위한 패턴
 _FRACTION_RE = re.compile(r"(\.\d{6})\d+")
+_SHORT_CONTAINER_ID = re.compile(r"[0-9a-f]{12}")
+_FULL_CONTAINER_ID = re.compile(r"[0-9a-f]{64}")
+
+
+def compose_temporary_target(name: str) -> str:
+    prefix, _, suffix = name.partition("_")
+    return suffix if _SHORT_CONTAINER_ID.fullmatch(prefix) else ""
+
+
+def is_compose_temporary_name(name: str, final_name: str, replace_label: str) -> bool:
+    return (
+        bool(replace_label and final_name)
+        and compose_temporary_target(name) == final_name
+        and (
+            _FULL_CONTAINER_ID.fullmatch(replace_label) is None
+            or replace_label == final_name
+            or replace_label.startswith(name[:12])
+        )
+    )
+
+
+def compose_replacement(name: str, labels: dict[str, Any]) -> tuple[str, bool]:
+    """Return valid Compose replacement metadata and whether the name is still temporary."""
+    project = labels.get("com.docker.compose.project")
+    replace_label = labels.get("com.docker.compose.replace")
+    if not project or not isinstance(replace_label, str) or not replace_label:
+        return "", False
+    target = compose_temporary_target(name)
+    if _FULL_CONTAINER_ID.fullmatch(replace_label):
+        # Older Compose versions put the replaced container's ID in the label.
+        return replace_label, is_compose_temporary_name(name, target, replace_label)
+
+    final_names = {replace_label}  # A custom container_name is stored verbatim.
+    service = labels.get("com.docker.compose.service")
+    number = labels.get("com.docker.compose.container-number")
+    if service and number:
+        for separator in ("-", "_"):
+            if replace_label == f"{service}{separator}{number}":
+                final_names.add(f"{project}{separator}{replace_label}")
+    if name in final_names:
+        return replace_label, False
+    if target in final_names:
+        return replace_label, True
+    return "", False
 
 
 def is_host_network(attrs: dict[str, Any]) -> bool:
@@ -227,10 +271,12 @@ class DockerClient:
 
             image = (attrs.get("Config", {}) or {}).get("Image", "") or ""
             created = to_local_iso(attrs.get("Created", ""), self.settings.TIMEZONE)
+            name = str(container.name or "").lstrip("/")
+            replace_label, temporary = compose_replacement(name, labels)
 
             return DockerContainerInfo(
                 container_id=str(container.id or ""),
-                name=str(container.name or "").lstrip("/"),
+                name=name,
                 status=normalize_status(
                     container.status,
                     ((attrs.get("State", {}) or {}).get("Health", {}) or {}).get("Status", ""),
@@ -243,6 +289,8 @@ class DockerClient:
                 stack=parse_stack(labels),
                 d2n_enabled=d2n_enabled,
                 d2n_database=d2n_database,
+                compose_replace_label=replace_label,
+                compose_temporary=temporary,
             )
         except NotFound:
             return None

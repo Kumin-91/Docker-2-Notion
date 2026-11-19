@@ -6,7 +6,10 @@ from typing import Any
 from pathlib import Path
 
 from src.models import DockerContainerInfo
+from src.status import NotionStatus
 from src.storage import identity, read_json, write_json
+
+_LIVE_CONTAINER_FIELDS = ("compose_replace_label", "compose_temporary")
 
 
 @dataclass
@@ -17,6 +20,7 @@ class SyncJob:
     attempts: int = 0
     uncertain: bool = False
     blocked: str | None = None
+    cleanup_page_id: str | None = None
 
 
 @dataclass
@@ -30,10 +34,21 @@ def _container(value: Any) -> DockerContainerInfo:
     if not isinstance(value, dict):
         raise ValueError("Invalid container in sync state")
     for field in fields(DockerContainerInfo):
+        if field.name in _LIVE_CONTAINER_FIELDS:
+            continue
         expected = bool if field.name == "d2n_enabled" else str
         if not isinstance(value.get(field.name), expected):
             raise ValueError(f"Invalid container field: {field.name}")
-    return DockerContainerInfo(**value)
+    return DockerContainerInfo(**{key: item for key, item in value.items() if key not in _LIVE_CONTAINER_FIELDS})
+
+
+def _record(entry: SyncJob | ManagedContainer) -> dict[str, Any]:
+    value = asdict(entry)
+    for field in _LIVE_CONTAINER_FIELDS:
+        del value["container"][field]
+    if isinstance(entry, SyncJob) and entry.cleanup_page_id is None:
+        del value["cleanup_page_id"]
+    return value
 
 
 class SyncState:
@@ -56,12 +71,17 @@ class SyncState:
             container = _container(value.get("container"))
             db = value.get("database_id")
             due, attempts = value.get("due"), value.get("attempts")
+            cleanup_page_id = value.get("cleanup_page_id")
             if (
                 not isinstance(db, str) or not db or key != identity(db, container.name)
                 or not isinstance(due, (float, int)) or not math.isfinite(due) or due < 0
                 or type(attempts) is not int or attempts < 0
                 or type(value.get("uncertain")) is not bool
                 or (value.get("blocked") is not None and not isinstance(value["blocked"], str))
+                or (cleanup_page_id is not None and (
+                    not isinstance(cleanup_page_id, str) or not cleanup_page_id
+                    or value["uncertain"] or container.status != NotionStatus.REMOVED
+                ))
             ):
                 raise ValueError("Invalid sync job fields")
             self.jobs[key] = SyncJob(**{**value, "container": container})
@@ -80,6 +100,6 @@ class SyncState:
     def save(self) -> None:
         write_json(self.path, {
             "version": 1,
-            "jobs": {key: asdict(job) for key, job in self.jobs.items()},
-            "managed": {key: asdict(entry) for key, entry in self.managed.items()},
+            "jobs": {key: _record(job) for key, job in self.jobs.items()},
+            "managed": {key: _record(entry) for key, entry in self.managed.items()},
         }, durable=True)

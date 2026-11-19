@@ -13,7 +13,9 @@ from notion_client.errors import HTTPResponseError
 
 from config.settings import Settings
 from src.cache_manager import CacheManager
-from src.docker_client import DockerClient
+from src.docker_client import (
+    DockerClient, compose_replacement, compose_temporary_target, is_compose_temporary_name,
+)
 from src.logger import main_logger
 from src.models import DockerContainerInfo
 from src.notion_client import (
@@ -61,11 +63,15 @@ class SyncService:
                 job.due = self.clock()
 
     def submit(self, container: DockerContainerInfo, database_id: str | None = None) -> None:
-        if not container.d2n_enabled:
+        if not container.d2n_enabled or container.compose_temporary:
             return
         db = normalize_database_id(database_id or self.settings.resolve_db_id(container.d2n_database))
         key = identity(db, container.name)
         job = self.state.jobs.get(key)
+        if job is not None and job.cleanup_page_id is not None:
+            if container.status == NotionStatus.REMOVED:
+                return  # Keep the already verified, page-specific removal.
+            job = None  # The name is back in use, so the normal job takes over.
         if job is None:
             self.state.jobs[key] = SyncJob(db, container, due=self.clock())
         else:
@@ -90,7 +96,16 @@ class SyncService:
         container_id = str(event.get("id") or actor.get("ID") or "")
         if not name or not container_id:
             return
-        removed = event.get("Action") == "destroy"
+        action = event.get("Action")
+        if action == "rename":
+            old_name = attrs.get("oldName")
+            if isinstance(old_name, str):
+                self._submit_compose_rename(container_id, old_name.lstrip("/"), name, attrs)
+            return
+        _, temporary = compose_replacement(name, attrs)
+        if temporary:
+            return
+        removed = action == "destroy"
         self.submit(DockerContainerInfo(
             container_id=container_id, name=name,
             status=NotionStatus.REMOVED if removed else NotionStatus.CREATED,
@@ -105,14 +120,59 @@ class SyncService:
         # A network event's actor ID identifies the network, not its container.
         if not isinstance(container_id, str) or not container_id.strip():
             return
+        container = self._inspect_event_container(container_id)
+        if container is not None:
+            self.submit(container)
+
+    def _inspect_event_container(self, container_id: str) -> DockerContainerInfo | None:
         try:
-            container = self.docker.get_container_info(container_id)
+            return self.docker.get_container_info(container_id)
         except (DockerException, RequestException, ConnectionError) as exc:
             if self.snapshot_due == float("inf"):
                 self._defer_snapshot(exc)
+            return None
+
+    def _submit_compose_rename(
+        self, container_id: str, old_name: str, name: str, attrs: dict[str, Any],
+    ) -> None:
+        _, temporary = compose_replacement(old_name, attrs)
+        if not temporary or compose_temporary_target(old_name) != name:
             return
-        if container is not None:
-            self.submit(container)
+        current = self._inspect_event_container(container_id)
+        if (
+            current is None or current.name != name or current.container_id != container_id
+            or not current.d2n_enabled or not current.compose_replace_label or current.compose_temporary
+        ):
+            return
+        self.submit(current)
+        self._schedule_compose_cleanup(old_name, current)
+
+    def _schedule_compose_cleanup(self, old_name: str, current: DockerContainerInfo) -> None:
+        if (
+            not current.d2n_enabled or current.compose_temporary
+            or not is_compose_temporary_name(old_name, current.name, current.compose_replace_label)
+        ):
+            return
+        db = normalize_database_id(self.settings.resolve_db_id(current.d2n_database))
+        key = identity(db, old_name)
+        entry = self.state.managed.get(key)
+        final_entry = self.state.managed.get(identity(db, current.name))
+        if (
+            entry is None or entry.container.container_id != current.container_id
+            or entry.container.status == NotionStatus.REMOVED
+            or (final_entry is not None and final_entry.page_id == entry.page_id)
+        ):
+            return
+        job = self.state.jobs.get(key)
+        if job is not None and (job.uncertain or job.cleanup_page_id is not None):
+            return
+        removed = replace(entry.container, status=NotionStatus.REMOVED)
+        if job is None:
+            self.state.jobs[key] = SyncJob(db, removed, due=self.clock(), cleanup_page_id=entry.page_id)
+        else:
+            job.container = removed
+            job.cleanup_page_id = entry.page_id
+        self.state.save()
 
     def request_snapshot(self) -> None:
         self.snapshot_due = self.clock()
@@ -126,35 +186,43 @@ class SyncService:
     def reconcile(self) -> None:
         # snapshot() raises on partial/failed reads: never infer removals then.
         snapshot = self.docker.snapshot()
-        live_keys = set()
+        live_by_id = {container.container_id: container for container in snapshot.containers}
         live_names = {container.name for container in snapshot.containers}
         for container in snapshot.containers:
-            if container.d2n_enabled:
-                db = self.settings.resolve_db_id(container.d2n_database)
-                live_keys.add(identity(db, container.name))
-                self.submit(container)
-        for key, entry in list(self.state.managed.items()):
-            if (
-                key not in live_keys
-                and entry.container.container_id not in snapshot.container_ids
-                and entry.container.name not in live_names
-                and entry.container.status != NotionStatus.REMOVED
-            ):
+            self.submit(container)
+        for entry in self.state.managed.values():
+            previous = entry.container
+            if previous.name in live_names or previous.status == NotionStatus.REMOVED:
+                continue
+            current = live_by_id.get(previous.container_id)
+            if current is not None:
+                self._schedule_compose_cleanup(previous.name, current)
+            elif previous.container_id not in snapshot.container_ids:
                 self.submit(
-                    replace(entry.container, status=NotionStatus.REMOVED, ip="", port=""),
+                    replace(previous, status=NotionStatus.REMOVED, ip="", port=""),
                     database_id=entry.database_id,
                 )
 
     def _refresh(self, job: SyncJob) -> DockerContainerInfo | None:
-        current = self.docker.get_container_info(job.container.name)
+        name = job.container.name
+        current = self.docker.get_container_info(name)
         if current is not None:
-            if not current.d2n_enabled:
+            if not current.d2n_enabled or current.compose_temporary:
                 return None
             db = normalize_database_id(self.settings.resolve_db_id(current.d2n_database))
             if db != job.database_id:
                 return None  # Preserve the old DB's page on routing changes.
             return current  # Also replaces delayed destroy events for older IDs.
-        previous = self.state.managed.get(identity(job.database_id, job.container.name))
+        # A job queued by an older release can outlive the temporary Docker name.
+        if compose_temporary_target(name):
+            renamed = self.docker.get_container_info(job.container.container_id)
+            if (
+                renamed is not None and not renamed.compose_temporary
+                and renamed.container_id == job.container.container_id
+                and is_compose_temporary_name(name, renamed.name, renamed.compose_replace_label)
+            ):
+                return None
+        previous = self.state.managed.get(identity(job.database_id, name))
         container = previous.container if previous is not None else job.container
         return replace(
             container, status=NotionStatus.REMOVED, ip="", port="",
@@ -221,8 +289,30 @@ class SyncService:
                 job.blocked = str(exc)
                 main_logger.error(f"Status configuration for DB {database_id} blocked; correct and restart: {exc}")
 
+    def _run_compose_cleanup(self, key: str, job: SyncJob, page_id: str) -> None:
+        entry = self.state.managed.get(key)
+        name = job.container.name
+        if (
+            entry is not None and entry.page_id == page_id
+            and entry.container.container_id == job.container.container_id
+            and self.docker.get_container_info(name) is None
+        ):
+            self.notion.ensure_status_schema(job.database_id)
+            if self.notion.mark_removed_if_matches(page_id, job.database_id, name):
+                self.state.managed[key] = replace(entry, container=job.container)
+            else:
+                del self.state.managed[key]
+                if self.cache.get_page_id(job.database_id, name) == page_id:
+                    self.cache.remove_page_id(job.database_id, name)
+                main_logger.info(f"Temporary page for {name} no longer matches its recorded identity")
+        del self.state.jobs[key]
+        self.state.save()
+
     def _run_job(self, key: str, job: SyncJob) -> None:
         try:
+            if job.cleanup_page_id is not None:
+                self._run_compose_cleanup(key, job, job.cleanup_page_id)
+                return
             current = self._refresh(job)
             if current is None and not job.uncertain:
                 del self.state.jobs[key]

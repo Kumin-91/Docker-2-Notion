@@ -30,3 +30,6 @@ class DockerContainerInfo:
     stack: str
     d2n_enabled: bool
     d2n_database: str
+    # From live Docker metadata, omitted from the persisted container record.
+    compose_replace_label: str = ""
+    compose_temporary: bool = False

@@ -16,6 +16,7 @@ from notion_client.errors import (
 )
 from src.models import DockerContainerInfo
 from src.logger import notion_logger
+from src.status import NotionStatus
 from src.status_schema import status_options, status_schema_matches, status_schema_update
 from src.storage import fsync_directory, normalize_database_id, read_json, write_json
 
@@ -205,17 +206,55 @@ class NotionClient:
         - 그 외 오류       -> 일시 오류는 내부 재시도하며, 전파된 예외는 호출 측에서 재시도 또는 차단 판단
         """
         notion_logger.debug(f"Updating page {page_id} for container: {container.name}")
-        data = self._convert_property(container)
+        self._update_page_properties(page_id, self._convert_property(container), container.name)
+        return True
+
+    def _update_page_properties(self, page_id: str, properties: dict[str, Any], name: str) -> None:
         try:
             self._request_with_retry(
-                f"update_page({container.name})",
-                lambda: self.client.pages.update(page_id=page_id, properties=data),
+                f"update_page({name})",
+                lambda: self.client.pages.update(page_id=page_id, properties=properties),
             )
-            return True
         except APIResponseError as e:
             if e.code == APIErrorCode.ObjectNotFound:
                 raise PageNotFoundError(page_id) from e
             raise
+
+    def mark_removed_if_matches(self, page_id: str, database_id: str, name: str) -> bool:
+        """Retire a recorded temporary page while preserving its other properties."""
+        try:
+            page = self._request_with_retry(
+                f"retrieve_page({name})",
+                lambda: self.client.pages.retrieve(page_id=page_id),
+            )
+        except APIResponseError as e:
+            if e.code == APIErrorCode.ObjectNotFound:
+                return False
+            raise
+        if not isinstance(page, dict) or not isinstance(parent := page.get("parent"), dict):
+            raise ValueError("Malformed Notion page response")
+        page_db = parent.get("database_id")
+        if (
+            not isinstance(page_db, str)
+            or normalize_database_id(page_db) != database_id
+            or page.get("archived")
+            or page.get("in_trash")
+        ):
+            return False
+        properties = page.get("properties")
+        name_property = properties.get("Name") if isinstance(properties, dict) else None
+        title = name_property.get("title") if isinstance(name_property, dict) else None
+        if not isinstance(title, list) or not all(
+            isinstance(part, dict) and isinstance(part.get("plain_text"), str) for part in title
+        ):
+            return False
+        if "".join(part["plain_text"] for part in title) != name:
+            return False
+        try:
+            self._update_page_properties(page_id, {"Status": {"status": {"name": NotionStatus.REMOVED}}}, name)
+        except PageNotFoundError:
+            return False
+        return True
 
     def find_page_id(self, database_id: str, container_name: str) -> str | None:
         """None only means a successful, empty search. All failures propagate."""
